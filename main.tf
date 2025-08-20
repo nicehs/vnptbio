@@ -145,6 +145,7 @@ variable "environment" {
   }
 }
 
+
 variable "cluster_version" {
   description = "Kubernetes version"
   type        = string
