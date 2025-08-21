@@ -1,0 +1,2 @@
+### Run it for kubectl
+aws eks --region ap-southeast-1 update-kubeconfig --name biocenter_cluster
