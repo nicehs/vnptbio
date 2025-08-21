@@ -1,14 +1,10 @@
 # =============================================================================
-# Complete EKS Infrastructure with Container Registry
-# Includes: VPC, EKS Cluster, S3, and Harbor Registry with S3 backend
+# Complete EKS Infrastructure with SSH Access from Anywhere
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Provider Configuration
-# -----------------------------------------------------------------------------
 terraform {
   required_version = ">= 1.0"
-  
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -24,10 +20,10 @@ terraform {
     }
   }
 }
- 
+
 provider "aws" {
   region = var.aws_region
-  
+
   default_tags {
     tags = {
       Project     = var.project_name
@@ -37,32 +33,9 @@ provider "aws" {
   }
 }
 
-resource "aws_eks_cluster" "biocenter_cluster" {
-  name     = "biocenter_cluster"
-  role_arn = aws_iam_role.eks_role.arn
-
-  vpc_config {
-    subnet_ids         = aws_subnet.eks[*].id
-    security_group_ids = [aws_security_group.eks_cluster_sg.id]
-  }
-}
-
-resource "aws_eks_node_group" "vnpt_node_group" {
-  cluster_name    = aws_eks_cluster.biocenter_cluster.name
-  node_group_name = "vnpt"
-  node_role_arn   = aws_iam_role.eks_node_role.arn
-  subnet_ids      = aws_subnet.eks[*].id
-
-  scaling_config {
-    desired_size = 2
-    max_size     = 2
-    min_size     = 1
-  }
-
-  instance_types = ["t3.micro"]
-}
-
-# Example VPC (minimal)
+# -----------------------------------------------------------------------------
+# VPC + Subnets
+# -----------------------------------------------------------------------------
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
   tags = {
@@ -70,16 +43,47 @@ resource "aws_vpc" "main" {
   }
 }
 
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags = {
+    Name = "eks-igw"
+  }
+}
+
 resource "aws_subnet" "eks" {
-  count             = 2
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
-  availability_zone = data.aws_availability_zones.available.names[count.index]
+  count                   = 2
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+
   tags = {
     Name = "eks-subnet-${count.index}"
   }
 }
 
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  tags = {
+    Name = "eks-public-rt"
+  }
+}
+
+resource "aws_route" "public_internet_access" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+resource "aws_route_table_association" "public_assoc" {
+  count          = length(aws_subnet.eks)
+  subnet_id      = aws_subnet.eks[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# -----------------------------------------------------------------------------
+# Security Groups
+# -----------------------------------------------------------------------------
 resource "aws_security_group" "eks_cluster_sg" {
   name        = "eks-cluster-sg"
   description = "EKS cluster security group"
@@ -92,8 +96,31 @@ resource "aws_security_group" "eks_cluster_sg" {
 
 resource "aws_security_group" "eks_nodes_sg" {
   name        = "eks-nodes-sg"
-  description = "Security group for EKS worker nodes"
+  description = "EKS worker nodes SG"
   vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH from anywhere"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Allow nodes communication"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   tags = {
     Name = "eks-nodes-sg"
@@ -107,13 +134,32 @@ resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
   protocol                 = "tcp"
   security_group_id        = aws_security_group.eks_cluster_sg.id
   source_security_group_id = aws_security_group.eks_nodes_sg.id
-  description              = "Allow nodes to communicate with EKS control plane"
+  description              = "Allow nodes to talk to cluster"
 }
 
+# -----------------------------------------------------------------------------
+# IAM Roles
+# -----------------------------------------------------------------------------
 resource "aws_iam_role" "eks_role" {
   name = "eks-cluster-role"
 
   assume_role_policy = data.aws_iam_policy_document.eks_assume_role_policy.json
+}
+
+resource "aws_iam_role" "eks_node_role" {
+  name = "eks-node-role"
+
+  assume_role_policy = data.aws_iam_policy_document.eks_node_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_AmazonEKSClusterPolicy" {
+  role       = aws_iam_role.eks_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "cluster_AmazonEKSServicePolicy" {
+  role       = aws_iam_role.eks_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
 }
 
 resource "aws_iam_role_policy_attachment" "node_AmazonEKSWorkerNodePolicy" {
@@ -131,12 +177,70 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
-resource "aws_iam_role" "eks_node_role" {
-  name = "eks-node-group-role"
+# -----------------------------------------------------------------------------
+# EKS Cluster + Node Group
+# -----------------------------------------------------------------------------
+resource "aws_eks_cluster" "biocenter_cluster" {
+  name     = "biocenter_cluster"
+  role_arn = aws_iam_role.eks_role.arn
 
-  assume_role_policy = data.aws_iam_policy_document.eks_node_assume_role_policy.json
+  vpc_config {
+    subnet_ids         = aws_subnet.eks[*].id
+    security_group_ids = [aws_security_group.eks_cluster_sg.id]
+  }
 }
 
+resource "aws_eks_node_group" "vnpt_node_group" {
+  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  node_group_name = "vnpt"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = aws_subnet.eks[*].id
+
+  scaling_config {
+    desired_size = var.node_desired_size
+    max_size     = var.node_max_size
+    min_size     = var.node_min_size
+  }
+
+  instance_types = [var.node_instance_type]
+
+  # ✅ Enable SSH access
+  remote_access {
+    ec2_ssh_key               = var.key_name
+    source_security_group_ids = [aws_security_group.ssh_access.id]
+  }
+}
+
+# Security group to allow SSH from anywhere (⚠️ not secure, use cautiously)
+resource "aws_security_group" "ssh_access" {
+  name        = "eks-ssh-access"
+  description = "Allow SSH access to EKS worker nodes"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH from anywhere"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "eks-ssh-access"
+  }
+}
+
+
+# -----------------------------------------------------------------------------
+# Data Sources
+# -----------------------------------------------------------------------------
 data "aws_availability_zones" "available" {}
 
 data "aws_iam_policy_document" "eks_assume_role_policy" {
@@ -163,9 +267,9 @@ data "aws_iam_policy_document" "eks_node_assume_role_policy" {
 # Variables
 # -----------------------------------------------------------------------------
 variable "key_name" {
-  description = "Name of the EC2 key pair to enable SSH access"
+  description = "EC2 key pair name for SSH access"
   type        = string
-  default     = "" # set your key pair name here or pass it via terraform.tfvars
+  default     = "my-keypair" # <- set your keypair name here
 }
 
 variable "aws_region" {
@@ -181,16 +285,15 @@ variable "project_name" {
 }
 
 variable "environment" {
-  description = "Environment name"
+  description = "Environment"
   type        = string
   default     = "dev"
-  
+
   validation {
     condition     = contains(["dev", "staging", "prod"], var.environment)
     error_message = "Environment must be dev, staging, or prod."
   }
 }
-
 
 variable "cluster_version" {
   description = "Kubernetes version"
@@ -199,25 +302,25 @@ variable "cluster_version" {
 }
 
 variable "node_instance_type" {
-  description = "EC2 instance type for worker nodes"
+  description = "Instance type"
   type        = string
   default     = "t3.medium"
 }
 
 variable "node_desired_size" {
-  description = "Desired number of worker nodes"
+  description = "Desired worker nodes"
   type        = number
   default     = 2
 }
 
 variable "node_max_size" {
-  description = "Maximum number of worker nodes"
+  description = "Max worker nodes"
   type        = number
   default     = 4
 }
 
 variable "node_min_size" {
-  description = "Minimum number of worker nodes"
+  description = "Min worker nodes"
   type        = number
   default     = 1
 }
