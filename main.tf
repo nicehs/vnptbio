@@ -24,7 +24,7 @@ terraform {
     }
   }
 }
-
+ 
 provider "aws" {
   region = var.aws_region
   
@@ -42,7 +42,8 @@ resource "aws_eks_cluster" "biocenter_cluster" {
   role_arn = aws_iam_role.eks_role.arn
 
   vpc_config {
-    subnet_ids = aws_subnet.eks[*].id
+    subnet_ids         = aws_subnet.eks[*].id
+    security_group_ids = [aws_security_group.eks_cluster_sg.id]
   }
 }
 
@@ -79,10 +80,55 @@ resource "aws_subnet" "eks" {
   }
 }
 
+resource "aws_security_group" "eks_cluster_sg" {
+  name        = "eks-cluster-sg"
+  description = "EKS cluster security group"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "eks-cluster-sg"
+  }
+}
+
+resource "aws_security_group" "eks_nodes_sg" {
+  name        = "eks-nodes-sg"
+  description = "Security group for EKS worker nodes"
+  vpc_id      = aws_vpc.main.id
+
+  tags = {
+    Name = "eks-nodes-sg"
+  }
+}
+
+resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster_sg.id
+  source_security_group_id = aws_security_group.eks_nodes_sg.id
+  description              = "Allow nodes to communicate with EKS control plane"
+}
+
 resource "aws_iam_role" "eks_role" {
   name = "eks-cluster-role"
 
   assume_role_policy = data.aws_iam_policy_document.eks_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonEKSWorkerNodePolicy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonEC2ContainerRegistryReadOnly" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
 resource "aws_iam_role" "eks_node_role" {
