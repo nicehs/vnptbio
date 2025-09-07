@@ -33,6 +33,12 @@ provider "aws" {
   }
 }
 
+provider "kubernetes" {
+  host                   = data.aws_eks_cluster.eks.endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.eks.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.eks.token
+}
+
 # -----------------------------------------------------------------------------
 # VPC + Subnets
 # -----------------------------------------------------------------------------
@@ -237,6 +243,172 @@ resource "aws_lb_listener" "app_listener" {
   }
 }
 
+
+# ---------------------------
+# OIDC Provider (for ALB Controller)
+# ---------------------------
+data "aws_eks_cluster" "eks" {
+  name = aws_eks_cluster.biocenter_cluster.name
+}
+
+data "aws_eks_cluster_auth" "eks" {
+  name = aws_eks_cluster.biocenter_cluster.name
+}
+
+data "tls_certificate" "eks" {
+  url = aws_eks_cluster.biocenter_cluster.identity[0].oidc[0].issuer
+}
+
+resource "aws_iam_openid_connect_provider" "oidc" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+  url             = aws_eks_cluster.biocenter_cluster.identity[0].oidc[0].issuer
+}
+
+# ---------------------------
+# IAM for AWS Load Balancer Controller
+# ---------------------------
+
+data "http" "alb_iam_policy" {
+  url = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.9.2/docs/install/iam_policy.json"
+}
+
+resource "aws_iam_policy" "alb_controller_policy" {
+  name        = "AWSLoadBalancerControllerIAMPolicy"
+  description = "IAM policy for AWS Load Balancer Controller"
+  policy      = data.http.alb_iam_policy.response_body
+}
+
+resource "aws_iam_role" "alb_controller" {
+  name = "alb-controller-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Federated = aws_iam_openid_connect_provider.oidc.arn },
+      Action    = "sts:AssumeRoleWithWebIdentity",
+      Condition = {
+        StringEquals = {
+          "${replace(aws_iam_openid_connect_provider.oidc.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "alb_controller_attach" {
+  role       = aws_iam_role.alb_controller.name
+  policy_arn = aws_iam_policy.alb_controller_policy.arn
+}
+
+# ---------------------------
+# Helm Provider (for ALB Controller)
+# ---------------------------
+provider "helm" {
+  kubernetes {
+    host                   = data.aws_eks_cluster.eks.endpoint
+    cluster_ca_certificate = base64decode(data.aws_eks_cluster.eks.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.eks.token
+  }
+}
+
+resource "helm_release" "aws_lb_controller" {
+  name       = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  version    = "1.9.2"
+
+  set {
+    name  = "clusterName"
+    value = aws_eks_cluster.biocenter_cluster.name
+  }
+
+  set {
+    name  = "serviceAccount.create"
+    value = "true"
+  }
+
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller"
+  }
+
+  set {
+    name  = "region"
+    value = var.aws_region
+  }
+
+  set {
+    name  = "vpcId"
+    value = aws_vpc.main.id
+  }
+}
+
+resource "helm_release" "webssh" {
+  name       = "webssh"
+  namespace  = "default"
+  repository = "https://butlerx.github.io/charts"
+  chart      = "wetty"
+  version    = "0.1.2"
+
+  set {
+    name  = "image.repository"
+    value = "butlerx/wetty"
+  }
+
+  set {
+    name  = "image.tag"
+    value = "latest"
+  }
+
+  set {
+    name  = "service.type"
+    value = "ClusterIP"
+  }
+
+  set {
+    name  = "service.port"
+    value = "80"
+  }
+
+  set {
+    name  = "ingress.enabled"
+    value = "true"
+  }
+
+  set {
+    name  = "ingress.className"
+    value = "alb"
+  }
+
+  set {
+    name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/scheme"
+    value = "internet-facing"
+  }
+
+  set {
+    name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/target-type"
+    value = "ip"
+  }
+
+  set {
+    name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/listen-ports"
+    value = "[{\"HTTP\":80}]"
+  }
+
+  set {
+    name  = "ingress.hosts[0].paths[0].path"
+    value = "/ssh"
+  }
+
+  set {
+    name  = "ingress.hosts[0].paths[0].pathType"
+    value = "Prefix"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # IAM Roles
 # -----------------------------------------------------------------------------
@@ -390,4 +562,10 @@ variable "node_min_size" {
   description = "Min worker nodes"
   type        = number
   default     = 1
+}
+
+variable "allowed_ingress_ssh_cidr" {
+  description = "CIDR allowed to access ingress TCP SSH (2222). Set to your bastion/public IP or office IP."
+  type        = string
+  default     = "0.0.0.0/0" # CHANGE this to a safer CIDR (e.g. "203.0.113.5/32")
 }
