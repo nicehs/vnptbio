@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana-ingress
+  namespace: logging
+  annotations:
+    # AWS ALB controller annotations
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing            # or internet-facing
+    alb.ingress.kubernetes.io/target-type: ip             # target pods directly
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/group.name: kibana-group    # optional, group multiple ingresses
+    alb.ingress.kubernetes.io/load-balancer-name: kibana-alb
+    alb.ingress.kubernetes.io/healthcheck-path: /status
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kibana-kibana     # your Service name
+                port:
+                  number: 5601

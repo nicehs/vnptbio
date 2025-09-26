@@ -1,29 +1,18 @@
 # =============================================================================
-# Complete EKS Infrastructure with SSH Access from Anywhere
+# EKS Infrastructure with Bastion Host (SSM Only, Custom Subnets)
 # =============================================================================
 
 terraform {
   required_version = ">= 1.0"
-
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.23"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.11"
-    }
+    aws         = { source = "hashicorp/aws", version = "~> 5.0" }
+    kubernetes  = { source = "hashicorp/kubernetes", version = "~> 2.23" }
+    helm        = { source = "hashicorp/helm", version = "~> 2.11" }
   }
 }
 
 provider "aws" {
   region = var.aws_region
-
   default_tags {
     tags = {
       Project     = var.project_name
@@ -34,45 +23,53 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  host                   = data.aws_eks_cluster.eks.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.eks.certificate_authority[0].data)
-  token                  = data.aws_eks_cluster_auth.eks.token
+  host                   = aws_eks_cluster.biocenter_cluster.endpoint
+  cluster_ca_certificate = base64decode(aws_eks_cluster.biocenter_cluster.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.biocenter_cluster.token
+  load_config_file       = false
+}
+
+
+provider "helm" {
+  kubernetes {
+    host                   = aws_eks_cluster.biocenter_cluster.endpoint
+    cluster_ca_certificate = base64decode(aws_eks_cluster.biocenter_cluster.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.biocenter_cluster.token
+    #load_config_file       = false
+  }
 }
 
 # -----------------------------------------------------------------------------
-# VPC + Subnets
+# VPC + Custom Subnets
 # -----------------------------------------------------------------------------
 resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-  tags = {
-    Name = "eks-vpc"
-  }
+  cidr_block           = "10.233.8.0/24"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = { Name = "eks-vpc" }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
-  tags = {
-    Name = "eks-igw"
-  }
+  tags   = { Name = "eks-igw" }
 }
 
 resource "aws_subnet" "eks" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+  cidr_block              = element(["10.233.8.128/26", "10.233.8.192/26"], count.index)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
-
   tags = {
-    Name = "eks-subnet-${count.index}"
+    Name                                = "eks-subnet-${count.index}"
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/role/internal-elb" = "1"
   }
 }
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-  tags = {
-    Name = "eks-public-rt"
-  }
+  tags   = { Name = "eks-public-rt" }
 }
 
 resource "aws_route" "public_internet_access" {
@@ -94,35 +91,27 @@ resource "aws_security_group" "eks_cluster_sg" {
   name        = "eks-cluster-sg"
   description = "EKS cluster security group"
   vpc_id      = aws_vpc.main.id
-
-  tags = {
-    Name = "eks-cluster-sg"
-  }
+  tags        = { Name = "eks-cluster-sg" }
 }
 
 resource "aws_security_group" "eks_nodes_sg" {
   name        = "eks-nodes-sg"
   description = "EKS worker nodes SG"
   vpc_id      = aws_vpc.main.id
-
   ingress {
     description = "Allow nodes communication"
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
+    cidr_blocks = ["10.233.8.0/24"]
   }
-
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "eks-nodes-sg"
-  }
+  tags = { Name = "eks-nodes-sg" }
 }
 
 resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
@@ -137,38 +126,76 @@ resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
 
 resource "aws_security_group" "bastion_sg" {
   name        = "bastion-sg"
-  description = "Security group for bastion host (SSM only, no SSH)"
+  description = "Security group for bastion host (SSM only)"
   vpc_id      = aws_vpc.main.id
-
-  # No ingress rules needed for SSM access
-
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
-  tags = {
-    Name = "bastion-sg"
-  }
+  tags = { Name = "bastion-sg" }
 }
 
-# -----------------------------------------------------------------------------
-# Bastion Host
-# -----------------------------------------------------------------------------
-resource "aws_instance" "bastion" {
-  ami           = data.aws_ami.amazon_linux.id
-  instance_type = "t3.micro"
-  subnet_id     = aws_subnet.eks[0].id
-  key_name      = var.key_name
-  security_groups = [aws_security_group.bastion_sg.id]
-  iam_instance_profile = aws_iam_instance_profile.ssm_profile.name
+# resource "aws_security_group" "license_server_sg" {
+#   name        = "license-server-sg"
+#   description = "Security group for license server"
+#   vpc_id      = aws_vpc.main.id
+#   egress {
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+#   tags = { Name = "license-server-sg" }
+# }
 
-  tags = {
-    Name = "bastion-host"
-  }
-}
+# -----------------------------------------------------------------------------
+# License Server
+# -----------------------------------------------------------------------------
+# resource "aws_instance" "license-server" {
+#   ami                  = data.aws_ami.amazon_linux.id
+#   instance_type        = "t3.micro"
+#   subnet_id            = aws_subnet.eks[0].id
+#   key_name             = "eks-key"
+#   security_groups      = [aws_security_group.license_server_sg.id]
+#   tags                 = { Name = "license-server" }
+# }
+
+# resource "aws_security_group_rule" "bastion_to_license_server_ssh" {
+#   type                     = "ingress"
+#   from_port                = 22
+#   to_port                  = 22
+#   protocol                 = "tcp"
+#   security_group_id        = aws_security_group.license_server_sg.id
+#   source_security_group_id = aws_security_group.bastion_sg.id
+#   description              = "Allow SSH from Bastion to License Server"
+# }
+
+# -----------------------------------------------------------------------------
+# Bastion Host + License server (SSM only)
+# -----------------------------------------------------------------------------
+# resource "kubernetes_config_map" "aws_auth" {
+#   metadata {
+#     name      = "aws-auth"
+#     namespace = "kube-system"
+#   }
+
+#   data = {
+#     mapRoles = yamlencode([
+#       {
+#         rolearn  = aws_iam_role.eks_node_role.arn
+#         username = "system:node:{{EC2PrivateDNSName}}"
+#         groups   = ["system:bootstrappers", "system:nodes"]
+#       },
+#       {
+#         rolearn  = aws_iam_role.ssm_role.arn
+#         username = "bastion"
+#         groups   = ["system:masters"]
+#       }
+#     ])
+#   }
+# }
 
 data "aws_ami" "amazon_linux" {
   most_recent = true
@@ -179,15 +206,15 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-resource "aws_iam_instance_profile" "ssm_profile" {
+resource "aws_iam_instance_profile" "bastion_ssm_profile" {
   name = "bastion-ssm-profile"
-  role = aws_iam_role.ssm_role.name
+  role = aws_iam_role.bastion_ssm_role.name
 }
 
-resource "aws_iam_role" "ssm_role" {
-  name = "bastion-ssm-role"
-  assume_role_policy = data.aws_iam_policy_document.ssm_assume_role_policy.json
-}
+# resource "aws_iam_role" "ssm_role" {
+#   name = "bastion-ssm-role"
+#   assume_role_policy = data.aws_iam_policy_document.ssm_assume_role_policy.json
+# }
 
 data "aws_iam_policy_document" "ssm_assume_role_policy" {
   statement {
@@ -199,214 +226,710 @@ data "aws_iam_policy_document" "ssm_assume_role_policy" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "bastion_ssm" {
-  role       = aws_iam_role.ssm_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+# resource "aws_iam_role_policy_attachment" "bastion_custom_eks_access" {
+#   role       = aws_iam_role.bastion_ssm_role.name
+#   policy_arn = "arn:aws:iam::136079915181:policy/EKSPlayground"
+# }
+
+resource "aws_instance" "bastion" {
+  ami                  = data.aws_ami.amazon_linux.id
+  instance_type        = "t3.micro"
+  subnet_id            = aws_subnet.eks[0].id
+  security_groups      = [aws_security_group.bastion_sg.id]
+  iam_instance_profile = aws_iam_instance_profile.bastion_ssm_profile.name
+  tags                 = { Name = "bastion-host" }
+  user_data = <<-EOF
+    #!/bin/bash
+    set -e
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+    # Update packages
+    yum update -y || apt-get update -y
+
+    # Install dependencies
+    yum install -y unzip curl || apt-get install -y unzip curl
+
+    # Install kubectl
+    #KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+    curl -LO "https://dl.k8s.io/release/v1.34.1/bin/linux/amd64/kubectl"
+    install -o root -g root -m 0755 kubectl /usr/bin/kubectl
+    rm kubectl
+
+    # Install AWS CLI v2
+    yum remove awscli -y
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip awscliv2.zip
+    ./aws/install --bin-dir /usr/bin --install-dir /usr/local/aws-cli
+
+    # Update the package repository
+    sudo yum update -y
+
+    # Install Docker
+    sudo yum install -y docker
+
+    # Start Docker service
+    sudo systemctl start docker
+
+    # Enable Docker to start on boot
+    sudo systemctl enable docker
+
+    # Download the latest Helm binary (for Linux AMD64)
+    curl -LO https://get.helm.sh/helm-v3.12.3-linux-amd64.tar.gz
+    tar -zxvf helm-v3.12.3-linux-amd64.tar.gz
+    sudo mv linux-amd64/helm /usr/bin/helm
+    sudo chmod +x /usr/bin/helm
+    helm version
+
+    # Install eksctl
+    curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" -o eksctl.tar.gz
+    tar -xzf eksctl.tar.gz
+    sudo mv eksctl /usr/bin/eksctl
+    sudo chmod +x /usr/bin/eksctl
+    eksctl version
+
+    # Add kube config
+    sudo aws eks --region ap-southeast-1 update-kubeconfig --name biocenter-cluster
+
+    # Install registry
+    sudo helm repo add twuni https://helm.twun.io
+    sudo helm repo update
+    sudo kubectl create serviceaccount registry-sa --namespace default
+    sudo kubectl annotate serviceaccount registry-sa   eks.amazonaws.com/role-arn=arn:aws:iam::136079915181:role/eks-irsa-registry-role   --namespace default
+    sudo helm upgrade --install docker-registry twuni/docker-registry   --namespace default   --create-namespace   --set persistence.enabled=false   --set service.type=NodePort   --set service.port=5000  \
+    --set storage=s3   --set s3.region=ap-southeast-1   --set s3.bucket=registry-bio1   --set s3.encrypt=true   --set serviceAccount.create=false   --set serviceAccount.name=registry-sa   --set secrets.s3.secretKey=""
+
+    # Install ingress
+    sudo helm repo add eks https://aws.github.io/eks-charts
+    sudo helm repo update
+    sudo kubectl create serviceaccount aws-load-balancer-controller --namespace kube-system
+    sudo kubectl annotate serviceaccount aws-load-balancer-controller   -n kube-system   eks.amazonaws.com/role-arn=arn:aws:iam::136079915181:role/eks-load-balancer-controller-role
+    VPCID=`sudo aws ec2 describe-vpcs --filters "Name=tag:Name,Values=eks-vpc" --query "Vpcs[0].VpcId" --output text`
+    sudo helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller   -n kube-system   --set clusterName=biocenter-cluster   --set serviceAccount.create=false \
+      --set region=ap-southeast-1   --set vpcId=$VPCID  --set serviceAccount.name=aws-load-balancer-controller
+  EOF
+
+  depends_on = [aws_eks_cluster.biocenter_cluster]
 }
 
-# Attach SSM policy to EKS node role
-resource "aws_iam_role_policy_attachment" "node_AmazonSSMManagedInstanceCore" {
-  role       = aws_iam_role.eks_node_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-# -----------------------------------------------------------------------------
-# Application Load Balancer
-# -----------------------------------------------------------------------------
-resource "aws_lb" "app_alb" {
-  name               = "app-alb"
-  internal           = false
-  load_balancer_type = "application"
-  subnets            = aws_subnet.eks[*].id
-  security_groups    = [aws_security_group.eks_nodes_sg.id]
-
-  tags = {
-    Name = "app-alb"
-  }
-}
-
-resource "aws_lb_target_group" "app_tg" {
-  name     = "app-tg"
-  port     = 80
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
-}
-
-resource "aws_lb_listener" "app_listener" {
-  load_balancer_arn = aws_lb.app_alb.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.app_tg.arn
-  }
-}
-
-
-# ---------------------------
-# OIDC Provider (for ALB Controller)
-# ---------------------------
-data "aws_eks_cluster" "eks" {
-  name = aws_eks_cluster.biocenter_cluster.name
-}
-
-data "aws_eks_cluster_auth" "eks" {
-  name = aws_eks_cluster.biocenter_cluster.name
-}
-
-data "tls_certificate" "eks" {
-  url = aws_eks_cluster.biocenter_cluster.identity[0].oidc[0].issuer
-}
-
-resource "aws_iam_openid_connect_provider" "oidc" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
-  url             = aws_eks_cluster.biocenter_cluster.identity[0].oidc[0].issuer
-}
-
-# ---------------------------
-# IAM for AWS Load Balancer Controller
-# ---------------------------
-
-data "http" "alb_iam_policy" {
-  url = "https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.9.2/docs/install/iam_policy.json"
-}
-
-resource "aws_iam_policy" "alb_controller_policy" {
-  name        = "AWSLoadBalancerControllerIAMPolicy"
-  description = "IAM policy for AWS Load Balancer Controller"
-  policy      = data.http.alb_iam_policy.response_body
-}
-
-resource "aws_iam_role" "alb_controller" {
-  name = "alb-controller-role"
+resource "aws_iam_role" "bastion_ssm_role" {
+  name = "bastion-ssm-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [{
-      Effect    = "Allow",
-      Principal = { Federated = aws_iam_openid_connect_provider.oidc.arn },
-      Action    = "sts:AssumeRoleWithWebIdentity",
-      Condition = {
-        StringEquals = {
-          "${replace(aws_iam_openid_connect_provider.oidc.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
-        }
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        },
+        Action = "sts:AssumeRole"
       }
-    }]
+    ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "alb_controller_attach" {
-  role       = aws_iam_role.alb_controller.name
-  policy_arn = aws_iam_policy.alb_controller_policy.arn
+resource "aws_iam_policy" "bastion_ssm_policy" {
+  name        = "bastion-ssm-policy"
+  description = "Policy for Bastion SSM Role"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "ssm:DescribeAssociation",
+          "ssm:GetDeployablePatchSnapshotForInstance",
+          "ssm:GetDocument",
+          "ssm:DescribeDocument",
+          "ssm:GetManifest",
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:ListAssociations",
+          "ssm:ListInstanceAssociations",
+          "ssm:PutInventory",
+          "ssm:PutComplianceItems",
+          "ssm:PutConfigurePackageResult",
+          "ssm:UpdateAssociationStatus",
+          "ssm:UpdateInstanceAssociationStatus",
+          "ssm:UpdateInstanceInformation"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2messages:AcknowledgeMessage",
+          "ec2messages:DeleteMessage",
+          "ec2messages:FailMessage",
+          "ec2messages:GetEndpoint",
+          "ec2messages:GetMessages",
+          "ec2messages:SendReply"
+        ],
+        Resource = "*"
+      },
+      {
+        Sid    = "VisualEditor0",
+        Effect = "Allow",
+        Action = [
+          "s3:*",
+          "eks:*",
+          "ec2:*",
+          "iam:*",
+          "ssm:StartSession",
+          "ssm:DescribeSessions",
+          "ssm:GetConnectionStatus",
+          "ssm:DescribeInstanceInformation",
+          "elasticloadbalancing:*",
+          "rds:*"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = "ssm:SendCommand",
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow",
+        Action   = "ssm:TerminateSession",
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "cloudformation:ListStacks",
+          "cloudformation:DescribeStacks",
+          "cloudformation:CreateStack",
+          "cloudformation:UpdateStack",
+          "cloudformation:DeleteStack",
+          "cloudformation:DescribeStackEvents"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
 }
 
-# ---------------------------
-# Helm Provider (for ALB Controller)
-# ---------------------------
-provider "helm" {
-  kubernetes {
-    host                   = data.aws_eks_cluster.eks.endpoint
-    cluster_ca_certificate = base64decode(data.aws_eks_cluster.eks.certificate_authority[0].data)
-    token                  = data.aws_eks_cluster_auth.eks.token
+resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
+  role       = aws_iam_role.bastion_ssm_role.name
+  policy_arn = aws_iam_policy.bastion_ssm_policy.arn
+}
+
+# -----------------------------------------------------------------------------
+# Dcoker registry
+# -----------------------------------------------------------------------------
+# resource "helm_release" "docker_registry" {
+#   name       = "docker-registry"
+#   repository = "https://helm.twun.io"
+#   chart      = "docker-registry"
+#   namespace  = "default"
+
+#   values = [
+#     yamlencode({
+#       storage = {
+#         type = "s3"
+#         s3 = {
+#           region = var.aws_region
+#           bucket = aws_s3_bucket.registry_bio.bucket
+#           encrypt = true
+#         }
+#       }
+
+#       persistence = {
+#         enabled = false
+#       }
+
+#       service = {
+#         type = "ClusterIP" # Or "LoadBalancer" if you want external access
+#         port = 5000
+#       }
+
+#       serviceAccount = {
+#         create = false
+#         name   = "registry-sa"  # This service account must be annotated with IRSA role
+#       }
+#     })
+#   ]
+
+#   depends_on = [aws_eks_cluster.biocenter_cluster]
+# }
+
+# -----------------------------------------------------------------------------
+# EKS Cluster + Node Group
+# -----------------------------------------------------------------------------
+resource "aws_eks_cluster" "biocenter_cluster" {
+  name     = "biocenter-cluster"
+  role_arn = aws_iam_role.eks_role.arn
+  vpc_config {
+    subnet_ids         = aws_subnet.eks[*].id
+    security_group_ids = [aws_security_group.eks_cluster_sg.id]
   }
 }
 
-resource "helm_release" "aws_lb_controller" {
-  name       = "aws-load-balancer-controller"
-  namespace  = "kube-system"
-  repository = "https://aws.github.io/eks-charts"
-  chart      = "aws-load-balancer-controller"
-  version    = "1.9.2"
+# resource "aws_eks_node_group" "vnpt_node_group" {
+#   cluster_name    = aws_eks_cluster.biocenter_cluster.name
+#   node_group_name = "vnpt"
+#   node_role_arn   = aws_iam_role.eks_node_role.arn
+#   subnet_ids      = aws_subnet.eks[*].id
+#   scaling_config {
+#     desired_size = var.node_desired_size
+#     max_size     = var.node_max_size
+#     min_size     = var.node_min_size
+#   }
+#   instance_types = [var.node_instance_type]
 
-  set {
-    name  = "clusterName"
-    value = aws_eks_cluster.biocenter_cluster.name
+#   remote_access {
+#     ec2_ssh_key               = "eks-key"
+#     source_security_group_ids = [aws_security_group.bastion_sg.id]
+#   }
+
+#   depends_on = [aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy]
+# }
+
+resource "aws_eks_node_group" "vnpt_node_group1" {
+  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  node_group_name = "vnpt-node-group1"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = aws_subnet.eks[*].id
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
   }
 
-  set {
-    name  = "serviceAccount.create"
-    value = "true"
+  instance_types = ["t3.medium"]
+
+  remote_access {
+    ec2_ssh_key               = var.ssh_key_name
+    source_security_group_ids = [aws_security_group.bastion_sg.id]
   }
 
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
+  depends_on = [
+    aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
+  ]
+}
+
+resource "aws_eks_node_group" "vnpt_node_group2" {
+  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  node_group_name = "vnpt-node-group2"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = aws_subnet.eks[*].id
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
   }
 
-  set {
-    name  = "region"
-    value = var.aws_region
+  instance_types = ["t4g.micro"]
+  ami_type       = "AL2023_ARM_64_STANDARD"
+
+  remote_access {
+    ec2_ssh_key               = var.ssh_key_name
+    source_security_group_ids = [aws_security_group.bastion_sg.id]
   }
 
-  set {
-    name  = "vpcId"
-    value = aws_vpc.main.id
+  depends_on = [
+    aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
+  ]
+}
+
+resource "aws_security_group_rule" "bastion_to_nodes_ssh" {
+  type                     = "ingress"
+  from_port                = 22
+  to_port                  = 22
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes_sg.id
+  source_security_group_id = aws_security_group.bastion_sg.id
+  description              = "Allow SSH from Bastion to EKS nodes"
+}
+
+# -----------------------------------------------------------------------------
+# Service link role
+# -----------------------------------------------------------------------------
+# Create the service-linked role for ELB
+resource "aws_iam_service_linked_role" "elb" {
+  aws_service_name = "elasticloadbalancing.amazonaws.com"
+  # AWS automatically attaches the AWSElasticLoadBalancingServiceRolePolicy policy.
+  # No need to attach it manually; it’s managed by AWS.
+}
+
+# # (Optional) — if you want to explicitly attach the AWS managed policy yourself:
+# data "aws_iam_policy" "elb_service_role_policy" {
+#   arn = "arn:aws:iam::aws:policy/aws-service-role/AWSElasticLoadBalancingServiceRolePolicy"
+# }
+
+# resource "aws_iam_role_policy_attachment" "elb_service_role_attach" {
+#   role       = aws_iam_service_linked_role.elb.name
+#   policy_arn = data.aws_iam_policy.elb_service_role_policy.arn
+# }
+
+# Service-linked role for Amazon EKS control plane
+resource "aws_iam_service_linked_role" "eks" {
+  aws_service_name = "eks.amazonaws.com"
+}
+
+# Service-linked role for Amazon EKS nodegroups
+resource "aws_iam_service_linked_role" "eks_nodegroup" {
+  aws_service_name = "eks-nodegroup.amazonaws.com"
+}
+
+# Service-linked role for Auto Scaling
+resource "aws_iam_service_linked_role" "autoscaling" {
+  aws_service_name = "autoscaling.amazonaws.com"
+}
+
+# Service-linked role for Amazon RDS
+resource "aws_iam_service_linked_role" "rds" {
+  aws_service_name = "rds.amazonaws.com"
+}
+
+# # Service-linked role for AWS Trusted Advisor
+# resource "aws_iam_service_linked_role" "trusted_advisor" {
+#   aws_service_name = "trustedadvisor.amazonaws.com"
+# }
+
+# # Service-linked role for AWS Support
+# resource "aws_iam_service_linked_role" "support" {
+#   aws_service_name = "support.amazonaws.com"
+# }
+# -----------------------------------------------------------------------------
+# Initialize module in EKS
+# -----------------------------------------------------------------------------
+data "aws_eks_cluster" "this" {
+  name = aws_eks_cluster.biocenter_cluster.name
+}
+
+# Fetch the OIDC provider for the cluster
+data "aws_iam_openid_connect_provider" "this" {
+  url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+
+  depends_on = [aws_iam_openid_connect_provider.eks]
+}
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da0ecd4e0e3"]
+}
+
+# IAM Policy for S3 access
+resource "aws_iam_policy" "registry_s3_access" {
+  name        = "registry-s3-access"
+  description = "Allow S3 access to registry-bio1 bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:ListBucket",
+          "s3:GetBucketLocation",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts",
+          "s3:ListBucketMultipartUploads"
+        ],
+        Resource = [
+          "arn:aws:s3:::registry-bio1",
+          "arn:aws:s3:::registry-bio1/*"
+        ]
+      }
+    ]
+  })
+}
+
+# IAM Role for IRSA with trust policy
+resource "aws_iam_role" "registry_irsa_role" {
+  name = "eks-irsa-registry-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        },
+        Action = "sts:AssumeRoleWithWebIdentity",
+        Condition = {
+          StringEquals = {
+            "${replace(data.aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:default:registry-sa"
+          }
+        }
+      }
+    ]
+  })
+  depends_on = [aws_iam_openid_connect_provider.eks]
+}
+
+# Attach the S3 access policy to the IRSA role
+resource "aws_iam_role_policy_attachment" "attach_registry_s3_access" {
+  role       = aws_iam_role.registry_irsa_role.name
+  policy_arn = aws_iam_policy.registry_s3_access.arn
+}
+
+# IAM Policy for S3 access
+resource "aws_iam_policy" "AWSLoadBalancerControllerIAMPolicy" {
+  name        = "AWSLoadBalancerControllerIAMPolicy"
+  description = "Allow EKS control ELB"
+
+  policy = <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:GetCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateSecurityGroup",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeTags",
+        "ec2:DescribeVpcs",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeAvailabilityZones"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:AddListenerCertificates",
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateRule",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:DeleteRule",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:DescribeListenerCertificates",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeLoadBalancerAttributes",
+        "elasticloadbalancing:DescribeRules",
+        "elasticloadbalancing:DescribeSSLPolicies",
+        "elasticloadbalancing:DescribeTags",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:ModifyRule",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:RemoveListenerCertificates",
+        "elasticloadbalancing:RemoveTags",
+        "elasticloadbalancing:SetIpAddressType",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets",
+        "elasticloadbalancing:SetWebAcl",
+        "elasticloadbalancing:DescribeTargetGroupAttributes",
+        "elasticloadbalancing:DescribeListenerAttributes"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateServiceLinkedRole",
+        "iam:GetServerCertificate",
+        "iam:ListServerCertificates",
+        "iam:GetRole"
+],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:DescribeUserPoolClient"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "waf-regional:GetWebACLForResource",
+        "waf-regional:GetWebACL",
+        "waf-regional:AssociateWebACL",
+        "waf-regional:DisassociateWebACL"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "tag:GetResources",
+        "tag:TagResources"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "shield:GetSubscriptionState",
+        "shield:DescribeProtection",
+        "shield:CreateProtection",
+        "shield:DeleteProtection",
+        "shield:DescribeSubscription"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+POLICY
+}
+
+# IAM Role for IRSA with trust policy
+resource "aws_iam_role" "eks-load-balancer-controller-role" {
+  name = "eks-load-balancer-controller-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        },
+        Action = "sts:AssumeRoleWithWebIdentity",
+        Condition = {
+          StringEquals = {
+            "${replace(data.aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+          }
+        }
+      }
+    ]
+  })
+  depends_on = [aws_iam_openid_connect_provider.eks]
+}
+
+# Attach the S3 access policy to the IRSA role
+resource "aws_iam_role_policy_attachment" "attach_AWSLoadBalancerControllerIAMPolicy" {
+  role       = aws_iam_role.eks-load-balancer-controller-role.name
+  policy_arn = aws_iam_policy.AWSLoadBalancerControllerIAMPolicy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "cni" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.eks_node_role.name
+}
+
+# -----------------------------------------------------------------------------
+# ALB
+# -----------------------------------------------------------------------------
+
+# resource "helm_release" "aws_lb_controller" {
+#   name       = "aws-load-balancer-controller"
+#   repository = "https://aws.github.io/eks-charts"
+#   chart      = "aws-load-balancer-controller"
+#   namespace  = "kube-system"
+#   version    = "1.7.1" # Check latest version
+
+#   values = [
+#     <<EOF
+# clusterName: ${aws_eks_cluster.biocenter_cluster.name}
+# region: ${var.aws_region}
+# vpcId: ${aws_vpc.main.id}
+# serviceAccount:
+#   create: false
+#   name: aws-load-balancer-controller
+# EOF
+#   ]
+
+#   depends_on = [aws_iam_role_policy_attachment.lb_controller_policy_attachment]
+# }
+
+# resource "aws_iam_role" "lb_controller_role" {
+#   name = "eks-load-balancer-controller-role"
+#   assume_role_policy = data.aws_iam_policy_document.lb_controller_assume_role_policy.json
+# }
+
+# data "aws_iam_policy_document" "lb_controller_assume_role_policy" {
+#   statement {
+#     effect = "Allow"
+#     principals {
+#       type        = "Service"
+#       identifiers = ["eks.amazonaws.com"]
+#     }
+#     actions = ["sts:AssumeRole"]
+#   }
+# }
+
+# resource "aws_iam_role_policy_attachment" "lb_controller_policy_attachment" {
+#   role       = aws_iam_role.lb_controller_role.name
+#   policy_arn = "arn:aws:iam::136079915181:policy/AWSLoadBalancerControllerIAMPolicy" # This is AWS managed policy for ALB controller
+# }
+
+# -----------------------------------------------------------------------------
+# Data Sources
+# -----------------------------------------------------------------------------
+data "aws_availability_zones" "available" {}
+
+data "aws_iam_policy_document" "eks_assume_role_policy" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["eks.amazonaws.com"]
+    }
   }
 }
 
-resource "helm_release" "webssh" {
-  name       = "webssh"
-  namespace  = "default"
-  repository = "https://butlerx.github.io/charts"
-  chart      = "wetty"
-  version    = "0.1.2"
-
-  set {
-    name  = "image.repository"
-    value = "butlerx/wetty"
+data "aws_iam_policy_document" "eks_node_assume_role_policy" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
   }
+}
 
-  set {
-    name  = "image.tag"
-    value = "latest"
-  }
-
-  set {
-    name  = "service.type"
-    value = "ClusterIP"
-  }
-
-  set {
-    name  = "service.port"
-    value = "80"
-  }
-
-  set {
-    name  = "ingress.enabled"
-    value = "true"
-  }
-
-  set {
-    name  = "ingress.className"
-    value = "alb"
-  }
-
-  set {
-    name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/scheme"
-    value = "internet-facing"
-  }
-
-  set {
-    name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/target-type"
-    value = "ip"
-  }
-
-  set {
-    name  = "ingress.annotations.alb\\.ingress\\.kubernetes\\.io/listen-ports"
-    value = "[{\"HTTP\":80}]"
-  }
-
-  set {
-    name  = "ingress.hosts[0].paths[0].path"
-    value = "/ssh"
-  }
-
-  set {
-    name  = "ingress.hosts[0].paths[0].pathType"
-    value = "Prefix"
-  }
+data "aws_eks_cluster_auth" "biocenter_cluster" {
+  name = aws_eks_cluster.biocenter_cluster.name
 }
 
 # -----------------------------------------------------------------------------
@@ -414,13 +937,11 @@ resource "helm_release" "webssh" {
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "eks_role" {
   name = "eks-cluster-role"
-
   assume_role_policy = data.aws_iam_policy_document.eks_assume_role_policy.json
 }
 
 resource "aws_iam_role" "eks_node_role" {
   name = "eks-node-role"
-
   assume_role_policy = data.aws_iam_policy_document.eks_node_assume_role_policy.json
 }
 
@@ -450,67 +971,111 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
 }
 
 # -----------------------------------------------------------------------------
-# EKS Cluster + Node Group
+# S3
 # -----------------------------------------------------------------------------
-resource "aws_eks_cluster" "biocenter_cluster" {
-  name     = "biocenter_cluster"
-  role_arn = aws_iam_role.eks_role.arn
+resource "aws_s3_bucket" "registry_bio" {
+  bucket = "registry-bio1"  # Must be globally unique
 
-  vpc_config {
-    subnet_ids         = aws_subnet.eks[*].id
-    security_group_ids = [aws_security_group.eks_cluster_sg.id]
+  tags = {
+    Name        = "registry-bio1"
+    Environment = var.environment
+    Project     = var.project_name
   }
 }
 
-resource "aws_eks_node_group" "vnpt_node_group" {
-  cluster_name    = aws_eks_cluster.biocenter_cluster.name
-  node_group_name = "vnpt"
-  node_role_arn   = aws_iam_role.eks_node_role.arn
-  subnet_ids      = aws_subnet.eks[*].id
+resource "aws_s3_bucket_public_access_block" "block_public_access" {
+  bucket = aws_s3_bucket.registry_bio.id
 
-  scaling_config {
-    desired_size = var.node_desired_size
-    max_size     = var.node_max_size
-    min_size     = var.node_min_size
-  }
-
-  instance_types = [var.node_instance_type]
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
 # -----------------------------------------------------------------------------
-# Data Sources
+# RDS
 # -----------------------------------------------------------------------------
-data "aws_availability_zones" "available" {}
+resource "aws_db_subnet_group" "rds_subnet_group" {
+  name       = "rds-subnet-group"
+  subnet_ids = aws_subnet.eks[*].id
 
-data "aws_iam_policy_document" "eks_assume_role_policy" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["eks.amazonaws.com"]
-    }
+  tags = {
+    Name = "rds-subnet-group"
   }
 }
 
-data "aws_iam_policy_document" "eks_node_assume_role_policy" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
-    }
+resource "aws_security_group" "rds_sg" {
+  name        = "rds-sg"
+  description = "Security group for RDS"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description      = "Allow PostgreSQL from EKS nodes"
+    from_port        = 5432
+    to_port          = 5432
+    protocol         = "tcp"
+    #security_groups  = [aws_security_group.eks_nodes_sg.id]  # Allow EKS nodes SG
+    cidr_blocks = ["10.233.8.128/26", "10.233.8.192/26"]
   }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "rds-sg"
+  }
+}
+
+resource "aws_db_instance" "postgres" {
+  identifier              = "postgres"
+  engine                  = "postgres"
+  engine_version          = "15.13"  # pick your version
+  instance_class          = "db.t3.micro"
+  allocated_storage       = 20
+  max_allocated_storage   = 100
+  storage_type            = "gp2"
+  username                = "adminuser"
+  password                = var.db_password
+  db_subnet_group_name    = aws_db_subnet_group.rds_subnet_group.name
+  vpc_security_group_ids  = [aws_security_group.rds_sg.id]
+  skip_final_snapshot     = true
+  publicly_accessible     = false
+  multi_az                = false
+  deletion_protection     = false
+  backup_retention_period = 7
+
+  tags = {
+    Name = "postgres"
+  }
+}
+
+variable "db_password" {
+  description = "The password for the PostgreSQL RDS instance"
+  type        = string
+  sensitive   = true
+}
+
+# -----------------------------------------------------------------------------
+# Allow EKS access RDS and S3
+# -----------------------------------------------------------------------------
+# Attach IAM policies to your EKS Node Group Role
+resource "aws_iam_role_policy_attachment" "node_AmazonS3ReadOnly" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "node_AmazonRDSFullAccess" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonRDSFullAccess"
 }
 
 # -----------------------------------------------------------------------------
 # Variables
 # -----------------------------------------------------------------------------
-variable "key_name" {
-  description = "EC2 key pair name for SSH access"
-  type        = string
-  default     = "my-keypair" # <- set your keypair name here
-}
-
 variable "aws_region" {
   description = "AWS region"
   type        = string
@@ -527,17 +1092,10 @@ variable "environment" {
   description = "Environment"
   type        = string
   default     = "dev"
-
   validation {
     condition     = contains(["dev", "staging", "prod"], var.environment)
     error_message = "Environment must be dev, staging, or prod."
   }
-}
-
-variable "cluster_version" {
-  description = "Kubernetes version"
-  type        = string
-  default     = "1.28"
 }
 
 variable "node_instance_type" {
@@ -568,4 +1126,9 @@ variable "allowed_ingress_ssh_cidr" {
   description = "CIDR allowed to access ingress TCP SSH (2222). Set to your bastion/public IP or office IP."
   type        = string
   default     = "0.0.0.0/0" # CHANGE this to a safer CIDR (e.g. "203.0.113.5/32")
+}
+
+variable "ssh_key_name" {
+  description = "EC2 key pair name used to SSH into worker nodes"
+  type        = string
 }
