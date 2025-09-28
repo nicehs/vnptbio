@@ -427,6 +427,123 @@ resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
 }
 
 # -----------------------------------------------------------------------------
+# Network Load Balancer
+# -----------------------------------------------------------------------------
+# We already have aws_vpc.main and aws_subnet.eks[count]
+
+# NLB 1 in subnet 0 (AZ1)
+resource "aws_lb" "nlb_se1a" {
+  name               = "nlb-se1a"
+  internal           = true
+  load_balancer_type = "network"
+
+  # Attach to first subnet
+  subnet_mapping {
+    subnet_id = aws_subnet.eks[0].id
+    # Optional: assign a static IP in the subnet
+    private_ipv4_address = "10.233.8.132"
+  }
+
+  enable_deletion_protection = false
+  tags = { Name = "nlb-se1a" }
+}
+
+# NLB 2 in subnet 1 (AZ2)
+resource "aws_lb" "nlb_se1b" {
+  name               = "nlb-se1b"
+  internal           = true
+  load_balancer_type = "network"
+
+  # Attach to second subnet
+  subnet_mapping {
+    subnet_id = aws_subnet.eks[1].id
+    # Optional static IP
+    private_ipv4_address = "10.233.8.196"
+  }
+
+  enable_deletion_protection = false
+  tags = { Name = "nlb-se1b" }
+}
+
+resource "aws_security_group_rule" "allow_nlb_to_nginx" {
+  type              = "ingress"
+  from_port         = 31730
+  to_port           = 31730
+  protocol          = "tcp"
+  security_group_id = aws_security_group.eks_nodes_sg.id
+
+  # NLB traffic comes from the VPC subnets
+  cidr_blocks = [
+    aws_subnet.eks[0].cidr_block,
+    aws_subnet.eks[1].cidr_block
+  ]
+  description = "Allow NLB to access Nginx Ingress NodePort"
+}
+
+resource "aws_lb_target_group" "nginx_tg_se1a" {
+  name        = "nginx-tg-se1a"
+  port        = 31730
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+  health_check {
+    port     = "31730"
+    protocol = "TCP"
+  }
+}
+
+resource "aws_lb_target_group" "nginx_tg_se1b" {
+  name        = "nginx-tg-se1b"
+  port        = 31730
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "instance"
+  health_check {
+    port     = "31730"
+    protocol = "TCP"
+  }
+}
+
+resource "aws_lb_listener" "az1_listener" {
+  load_balancer_arn = aws_lb.nlb_se1a.arn
+  port              = 80
+  protocol          = "TCP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.nginx_tg_se1a.arn
+  }
+}
+
+resource "aws_lb_listener" "az2_listener" {
+  load_balancer_arn = aws_lb.nlb_se1b.arn
+  port              = 80
+  protocol          = "TCP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.nginx_tg_se1b.arn
+  }
+}
+
+resource "aws_lb_target_group_attachment" "nginx_nodeport_se1a" {
+  count            = length(data.aws_instances.eks_nodes.ids)
+  target_group_arn = aws_lb_target_group.nginx_tg_se1a.arn
+  target_id        = data.aws_instances.eks_nodes.ids[count.index]  # instance IDs
+  port             = 31730
+}
+
+resource "aws_lb_target_group_attachment" "nginx_nodeport_se1b" {
+  count            = length(data.aws_instances.eks_nodes.ids)
+  target_group_arn = aws_lb_target_group.nginx_tg_se1b.arn
+  target_id        = data.aws_instances.eks_nodes.ids[count.index]  # instance IDs
+  port             = 31730
+}
+
+data "aws_instances" "eks_nodes" {
+  instance_tags = {
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+  }
+}
+# -----------------------------------------------------------------------------
 # Dcoker registry
 # -----------------------------------------------------------------------------
 # resource "helm_release" "docker_registry" {
@@ -521,6 +638,11 @@ resource "aws_eks_node_group" "vnpt_node_group1" {
     aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
     aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
   ]
+
+  tags = {
+    Name = "vnpt-node-group1"
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+  }
 }
 
 resource "aws_eks_node_group" "vnpt_node_group2" {
@@ -548,6 +670,11 @@ resource "aws_eks_node_group" "vnpt_node_group2" {
     aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
     aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
   ]
+
+  tags = {
+    Name = "vnpt-node-group2"
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+  } 
 }
 
 resource "aws_security_group_rule" "bastion_to_nodes_ssh" {
