@@ -49,17 +49,17 @@ resource "aws_vpc" "main" {
   tags = { Name = "eks-vpc" }
 }
 
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "eks-igw" }
-}
+# resource "aws_internet_gateway" "igw" {
+#   vpc_id = aws_vpc.main.id
+#   tags   = { Name = "eks-igw" }
+# }
 
 resource "aws_subnet" "eks" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
   cidr_block              = element(["10.233.8.128/26", "10.233.8.192/26"], count.index)
   availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false
   tags = {
     Name                                = "eks-subnet-${count.index}"
     "kubernetes.io/cluster/biocenter-cluster" = "owned"
@@ -67,22 +67,22 @@ resource "aws_subnet" "eks" {
   }
 }
 
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "eks-public-rt" }
-}
+# resource "aws_route_table" "public" {
+#   vpc_id = aws_vpc.main.id
+#   tags   = { Name = "eks-public-rt" }
+# }
 
-resource "aws_route" "public_internet_access" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.igw.id
-}
+# resource "aws_route" "public_internet_access" {
+#   route_table_id         = aws_route_table.public.id
+#   destination_cidr_block = "0.0.0.0/0"
+#   gateway_id             = aws_internet_gateway.igw.id
+# }
 
-resource "aws_route_table_association" "public_assoc" {
-  count          = length(aws_subnet.eks)
-  subnet_id      = aws_subnet.eks[count.index].id
-  route_table_id = aws_route_table.public.id
-}
+# resource "aws_route_table_association" "public_assoc" {
+#   count          = length(aws_subnet.eks)
+#   subnet_id      = aws_subnet.eks[count.index].id
+#   route_table_id = aws_route_table.public.id
+# }
 
 # -----------------------------------------------------------------------------
 # Security Groups
@@ -426,6 +426,59 @@ resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
   policy_arn = aws_iam_policy.bastion_ssm_policy.arn
 }
 
+resource "aws_vpc_endpoint" "ssm" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.ssm"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.eks[*].id
+  security_group_ids = [aws_security_group.bastion_sg.id]
+  private_dns_enabled = true
+  tags = { Name = "ssm-vpc-endpoint" }
+}
+
+# -----------------------------------------------------------------------------
+# SSM End Point
+# -----------------------------------------------------------------------------
+resource "aws_security_group" "ssm_endpoints_sg" {
+  name        = "ssm-endpoints-sg"
+  description = "SG for SSM VPC endpoints"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_vpc_endpoint" "ssm_messages" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.ssmmessages"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.eks[*].id
+  security_group_ids = [aws_security_group.bastion_sg.id]
+  private_dns_enabled = true
+  tags = { Name = "ssmmessages-vpc-endpoint" }
+}
+
+resource "aws_vpc_endpoint" "ec2_messages" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.ec2messages"
+  vpc_endpoint_type = "Interface"
+  subnet_ids        = aws_subnet.eks[*].id
+  security_group_ids = [aws_security_group.bastion_sg.id]
+  private_dns_enabled = true
+  tags = { Name = "ec2messages-vpc-endpoint" }
+}
+
 # -----------------------------------------------------------------------------
 # Network Load Balancer
 # -----------------------------------------------------------------------------
@@ -436,6 +489,7 @@ resource "aws_lb" "nlb_se1a" {
   name               = "nlb-se1a"
   internal           = true
   load_balancer_type = "network"
+  security_groups    = [aws_security_group.nlb_sg.id]
 
   # Attach to first subnet
   subnet_mapping {
@@ -453,6 +507,7 @@ resource "aws_lb" "nlb_se1b" {
   name               = "nlb-se1b"
   internal           = true
   load_balancer_type = "network"
+  security_groups    = [aws_security_group.nlb_sg.id]
 
   # Attach to second subnet
   subnet_mapping {
@@ -465,19 +520,44 @@ resource "aws_lb" "nlb_se1b" {
   tags = { Name = "nlb-se1b" }
 }
 
-resource "aws_security_group_rule" "allow_nlb_to_nginx" {
-  type              = "ingress"
-  from_port         = 31730
-  to_port           = 31730
-  protocol          = "tcp"
-  security_group_id = aws_security_group.eks_nodes_sg.id
+resource "aws_security_group" "nlb_sg" {
+  name        = "nlb-shared-sg"
+  description = "Security group for both NLBs"
+  vpc_id      = aws_vpc.main.id
 
-  # NLB traffic comes from the VPC subnets
-  cidr_blocks = [
-    aws_subnet.eks[0].cidr_block,
-    aws_subnet.eks[1].cidr_block
-  ]
-  description = "Allow NLB to access Nginx Ingress NodePort"
+  # Allow inbound from the internet or your CIDR
+  ingress {
+    description = "Allow inbound to NLB (HTTP)"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Allow inbound to NLB (HTTPS)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group_rule" "allow_nlb_to_nodes" {
+  type                     = "ingress"
+  from_port                = 31730
+  to_port                  = 31730
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes_sg.id
+  source_security_group_id = aws_security_group.nlb_sg.id
+  description              = "Allow traffic from both NLBs to NodePort"
 }
 
 resource "aws_lb_target_group" "nginx_tg_se1a" {
@@ -591,6 +671,8 @@ resource "aws_eks_cluster" "biocenter_cluster" {
   vpc_config {
     subnet_ids         = aws_subnet.eks[*].id
     security_group_ids = [aws_security_group.eks_cluster_sg.id]
+    endpoint_private_access = true
+    endpoint_public_access  = false
   }
 }
 
@@ -657,8 +739,8 @@ resource "aws_eks_node_group" "vnpt_node_group2" {
     min_size     = 1
   }
 
-  instance_types = ["t4g.micro"]
-  ami_type       = "AL2023_ARM_64_STANDARD"
+  instance_types = ["t3.micro"]
+  # ami_type       = "AL2023_ARM_64_STANDARD"
 
   remote_access {
     ec2_ssh_key               = var.ssh_key_name
