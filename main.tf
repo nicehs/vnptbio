@@ -84,6 +84,89 @@ resource "aws_subnet" "eks" {
 #   route_table_id = aws_route_table.public.id
 # }
 
+
+#-----------------------------
+# Internet Gateway
+#-----------------------------
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "eks-igw" }
+}
+
+#-----------------------------
+# Public Subnet for NAT Gateway
+#-----------------------------
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.233.8.0/26"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+  tags = {
+    Name                                = "eks-public-subnet"
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/role/elb" = "1"
+  }
+}
+
+#-----------------------------
+# Elastic IP for NAT Gateway
+#-----------------------------
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags = { Name = "eks-nat-eip" }
+}
+
+#-----------------------------
+# NAT Gateway in Public Subnet
+#-----------------------------
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public.id
+  tags = { Name = "eks-nat-gateway" }
+}
+
+#-----------------------------
+# Route Table for Public Subnet
+#-----------------------------
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "eks-public-rt" }
+}
+
+# Route to IGW for public subnet
+resource "aws_route" "public_internet" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+# Associate public subnet with its route table
+resource "aws_route_table_association" "public_assoc" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+#-----------------------------
+# Route Table for Private Subnets
+#-----------------------------
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "eks-private-rt" }
+}
+
+# Route to NAT Gateway for private subnets
+resource "aws_route" "private_nat" {
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.nat.id
+}
+
+# Associate private subnets with the private route table
+resource "aws_route_table_association" "private_assoc" {
+  count          = length(aws_subnet.eks)
+  subnet_id      = aws_subnet.eks[count.index].id
+  route_table_id = aws_route_table.private.id
+}
 # -----------------------------------------------------------------------------
 # Security Groups
 # -----------------------------------------------------------------------------
@@ -124,10 +207,21 @@ resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
   description              = "Allow nodes to talk to cluster"
 }
 
+resource "aws_security_group_rule" "allow_bastion_to_cluster_443" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster_sg.id
+  source_security_group_id = aws_security_group.bastion_sg.id
+  description              = "Allow bastion host to connect to cluster"
+}
+
 resource "aws_security_group" "bastion_sg" {
   name        = "bastion-sg"
   description = "Security group for bastion host (SSM only)"
   vpc_id      = aws_vpc.main.id
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -243,6 +337,12 @@ resource "aws_instance" "bastion" {
     set -e
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
+    echo "Starting SSM agent setup..." >> /var/log/user-data.log
+    systemctl enable amazon-ssm-agent
+    systemctl start amazon-ssm-agent
+    echo "SSM agent enabled and started" >> /var/log/user-data.log
+    systemctl status amazon-ssm-agent >> /var/log/user-data.log
+
     # Update packages
     yum update -y || apt-get update -y
 
@@ -309,6 +409,10 @@ resource "aws_instance" "bastion" {
   EOF
 
   depends_on = [aws_eks_cluster.biocenter_cluster]
+}
+
+output "bastion_user_data" {
+  value = aws_instance.bastion.user_data
 }
 
 resource "aws_iam_role" "bastion_ssm_role" {
@@ -421,64 +525,121 @@ resource "aws_iam_policy" "bastion_ssm_policy" {
   })
 }
 
+resource "aws_iam_role_policy_attachment" "bastion_ssm_core" {
+  role       = aws_iam_role.bastion_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
   role       = aws_iam_role.bastion_ssm_role.name
   policy_arn = aws_iam_policy.bastion_ssm_policy.arn
 }
 
-resource "aws_vpc_endpoint" "ssm" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${var.aws_region}.ssm"
-  vpc_endpoint_type = "Interface"
-  subnet_ids        = aws_subnet.eks[*].id
-  security_group_ids = [aws_security_group.bastion_sg.id]
-  private_dns_enabled = true
-  tags = { Name = "ssm-vpc-endpoint" }
-}
+# resource "aws_vpc_endpoint" "ssm" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ssm"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.bastion_sg.id]
+#   private_dns_enabled = true
+#   tags = { Name = "ssm-vpc-endpoint" }
+# }
 
 # -----------------------------------------------------------------------------
 # SSM End Point
 # -----------------------------------------------------------------------------
-resource "aws_security_group" "ssm_endpoints_sg" {
-  name        = "ssm-endpoints-sg"
-  description = "SG for SSM VPC endpoints"
-  vpc_id      = aws_vpc.main.id
+# resource "aws_security_group" "vpce" {
+#   name   = "vpce-sg"
+#   vpc_id = aws_vpc.main.id
 
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
-  }
+#   egress {
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
+#   ingress {
+#     from_port   = 443
+#     to_port     = 443
+#     protocol    = "tcp"
+#     cidr_blocks = [aws_vpc.main.cidr_block]
+#   }
+# }
 
-resource "aws_vpc_endpoint" "ssm_messages" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${var.aws_region}.ssmmessages"
-  vpc_endpoint_type = "Interface"
-  subnet_ids        = aws_subnet.eks[*].id
-  security_group_ids = [aws_security_group.bastion_sg.id]
-  private_dns_enabled = true
-  tags = { Name = "ssmmessages-vpc-endpoint" }
-}
+# resource "aws_iam_role_policy_attachment" "node_ssm_core" {
+#   role       = aws_iam_role.eks_node_role.name
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+# }
 
-resource "aws_vpc_endpoint" "ec2_messages" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${var.aws_region}.ec2messages"
-  vpc_endpoint_type = "Interface"
-  subnet_ids        = aws_subnet.eks[*].id
-  security_group_ids = [aws_security_group.bastion_sg.id]
-  private_dns_enabled = true
-  tags = { Name = "ec2messages-vpc-endpoint" }
-}
+# resource "aws_vpc_endpoint" "ssm" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ssm"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+#   tags = { Name = "ssm-vpc-endpoint" }
+# }
 
+# resource "aws_vpc_endpoint" "ssm_messages" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ssmmessages"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+#   tags = { Name = "ssmmessages-vpc-endpoint" }
+# }
+
+# resource "aws_vpc_endpoint" "ec2_messages" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ec2messages"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+#   tags = { Name = "ec2messages-vpc-endpoint" }
+# }
+
+# resource "aws_vpc_endpoint" "ec2" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ec2"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+#   tags = { Name = "ec2-vpc-endpoint" }
+# }
+
+# # ECR endpoints
+# resource "aws_vpc_endpoint" "ecr_api" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ecr.api"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+# }
+
+# resource "aws_vpc_endpoint" "ecr_dkr" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.ecr.dkr"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+# }
+
+# # EKS API endpoint (optional if cluster has private endpoint)
+# resource "aws_vpc_endpoint" "eks" {
+#   vpc_id            = aws_vpc.main.id
+#   service_name      = "com.amazonaws.${var.aws_region}.eks"
+#   vpc_endpoint_type = "Interface"
+#   subnet_ids        = aws_subnet.eks[*].id
+#   security_group_ids = [aws_security_group.vpce.id]
+#   private_dns_enabled = true
+# }
 # -----------------------------------------------------------------------------
 # Network Load Balancer
 # -----------------------------------------------------------------------------
@@ -675,26 +836,6 @@ resource "aws_eks_cluster" "biocenter_cluster" {
     endpoint_public_access  = false
   }
 }
-
-# resource "aws_eks_node_group" "vnpt_node_group" {
-#   cluster_name    = aws_eks_cluster.biocenter_cluster.name
-#   node_group_name = "vnpt"
-#   node_role_arn   = aws_iam_role.eks_node_role.arn
-#   subnet_ids      = aws_subnet.eks[*].id
-#   scaling_config {
-#     desired_size = var.node_desired_size
-#     max_size     = var.node_max_size
-#     min_size     = var.node_min_size
-#   }
-#   instance_types = [var.node_instance_type]
-
-#   remote_access {
-#     ec2_ssh_key               = "eks-key"
-#     source_security_group_ids = [aws_security_group.bastion_sg.id]
-#   }
-
-#   depends_on = [aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy]
-# }
 
 resource "aws_eks_node_group" "vnpt_node_group1" {
   cluster_name    = aws_eks_cluster.biocenter_cluster.name
@@ -1067,52 +1208,6 @@ resource "aws_iam_role_policy_attachment" "cni" {
 }
 
 # -----------------------------------------------------------------------------
-# ALB
-# -----------------------------------------------------------------------------
-
-# resource "helm_release" "aws_lb_controller" {
-#   name       = "aws-load-balancer-controller"
-#   repository = "https://aws.github.io/eks-charts"
-#   chart      = "aws-load-balancer-controller"
-#   namespace  = "kube-system"
-#   version    = "1.7.1" # Check latest version
-
-#   values = [
-#     <<EOF
-# clusterName: ${aws_eks_cluster.biocenter_cluster.name}
-# region: ${var.aws_region}
-# vpcId: ${aws_vpc.main.id}
-# serviceAccount:
-#   create: false
-#   name: aws-load-balancer-controller
-# EOF
-#   ]
-
-#   depends_on = [aws_iam_role_policy_attachment.lb_controller_policy_attachment]
-# }
-
-# resource "aws_iam_role" "lb_controller_role" {
-#   name = "eks-load-balancer-controller-role"
-#   assume_role_policy = data.aws_iam_policy_document.lb_controller_assume_role_policy.json
-# }
-
-# data "aws_iam_policy_document" "lb_controller_assume_role_policy" {
-#   statement {
-#     effect = "Allow"
-#     principals {
-#       type        = "Service"
-#       identifiers = ["eks.amazonaws.com"]
-#     }
-#     actions = ["sts:AssumeRole"]
-#   }
-# }
-
-# resource "aws_iam_role_policy_attachment" "lb_controller_policy_attachment" {
-#   role       = aws_iam_role.lb_controller_role.name
-#   policy_arn = "arn:aws:iam::136079915181:policy/AWSLoadBalancerControllerIAMPolicy" # This is AWS managed policy for ALB controller
-# }
-
-# -----------------------------------------------------------------------------
 # Data Sources
 # -----------------------------------------------------------------------------
 data "aws_availability_zones" "available" {}
@@ -1177,6 +1272,11 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEC2ContainerRegistryReadOn
 resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
   role       = aws_iam_role.eks_node_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_iam_role_policy_attachment" "bastion_eks" {
+  role       = aws_iam_role.bastion_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
 # -----------------------------------------------------------------------------
