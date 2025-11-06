@@ -101,7 +101,7 @@ resource "aws_subnet" "public" {
   cidr_block              = "10.233.8.0/26"
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
-  tags = {
+  tags = {  
     Name                                = "eks-public-subnet"
     "kubernetes.io/cluster/biocenter-cluster" = "owned"
     "kubernetes.io/role/elb" = "1"
@@ -643,7 +643,6 @@ resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
 # -----------------------------------------------------------------------------
 # Network Load Balancer
 # -----------------------------------------------------------------------------
-# We already have aws_vpc.main and aws_subnet.eks[count]
 
 # NLB 1 in subnet 0 (AZ1)
 resource "aws_lb" "nlb_se1a" {
@@ -718,6 +717,7 @@ resource "aws_security_group_rule" "allow_nlb_to_nodes" {
   protocol                 = "tcp"
   security_group_id        = aws_security_group.eks_nodes_sg.id
   source_security_group_id = aws_security_group.nlb_sg.id
+  #cidr_blocks       = [aws_vpc.main.cidr_block]
   description              = "Allow traffic from both NLBs to NodePort"
 }
 
@@ -837,6 +837,26 @@ resource "aws_eks_cluster" "biocenter_cluster" {
   }
 }
 
+resource "aws_launch_template" "eks_nodes_group1" {
+  name_prefix   = "eks-nodes-group1-"
+  instance_type = "t3.medium"
+
+  network_interfaces {
+    associate_public_ip_address = false
+    security_groups             = [aws_security_group.eks_nodes_sg.id]
+  }
+}
+
+resource "aws_launch_template" "eks_nodes_group2" {
+  name_prefix   = "eks-nodes-group2-"
+  instance_type = "t3.micro"
+
+  network_interfaces {
+    associate_public_ip_address = false
+    security_groups             = [aws_security_group.eks_nodes_sg.id]
+  }
+}
+
 resource "aws_eks_node_group" "vnpt_node_group1" {
   cluster_name    = aws_eks_cluster.biocenter_cluster.name
   node_group_name = "vnpt-node-group1"
@@ -849,12 +869,15 @@ resource "aws_eks_node_group" "vnpt_node_group1" {
     min_size     = 1
   }
 
-  instance_types = ["t3.medium"]
-
-  remote_access {
-    ec2_ssh_key               = var.ssh_key_name
-    source_security_group_ids = [aws_security_group.bastion_sg.id]
+  launch_template {
+    id      = aws_launch_template.eks_nodes_group1.id
+    version = "$Latest"
   }
+
+  # remote_access {
+  #   ec2_ssh_key               = var.ssh_key_name
+  #   source_security_group_ids = [aws_security_group.bastion_sg.id]
+  # }
 
   depends_on = [
     aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
@@ -880,13 +903,15 @@ resource "aws_eks_node_group" "vnpt_node_group2" {
     min_size     = 1
   }
 
-  instance_types = ["t3.micro"]
-  # ami_type       = "AL2023_ARM_64_STANDARD"
-
-  remote_access {
-    ec2_ssh_key               = var.ssh_key_name
-    source_security_group_ids = [aws_security_group.bastion_sg.id]
+  launch_template {
+    id      = aws_launch_template.eks_nodes_group2.id
+    version = "$Latest"
   }
+
+  # remote_access {
+  #   ec2_ssh_key               = var.ssh_key_name
+  #   source_security_group_ids = [aws_security_group.bastion_sg.id]
+  # }
 
   depends_on = [
     aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
