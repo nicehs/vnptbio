@@ -1,86 +1,142 @@
 # -----------------------------------------------------------------------------
-# EKS Cluster
+# EKS Cluster + Node Group
 # -----------------------------------------------------------------------------
-
-resource "aws_eks_cluster" "this" {
-  name     = var.cluster_name
-  role_arn = var.cluster_role_arn
-
-  version = var.cluster_version
-
+resource "aws_eks_cluster" "biocenter_cluster" {
+  name     = "biocenter-cluster"
+  role_arn = var.eks_role_arn
   vpc_config {
-    subnet_ids              = var.subnet_ids
-    endpoint_private_access = var.endpoint_private_access
-    endpoint_public_access  = var.endpoint_public_access
+    subnet_ids         = var.subnet_ids
+    security_group_ids = [aws_security_group.eks_cluster_sg.id]
+    endpoint_private_access = true
+    endpoint_public_access  = false
   }
-
-  kubernetes_network_config {
-    service_ipv4_cidr = var.service_ipv4_cidr
-  }
-
-  enabled_cluster_log_types = var.enabled_cluster_log_types
-
-  tags = merge(
-    var.tags,
-    {
-      Name   = var.cluster_name
-      Module = "eks"
-    }
-  )
 }
 
-# -----------------------------------------------------------------------------
-# Node Group(s)
-# -----------------------------------------------------------------------------
-
-resource "aws_eks_node_group" "this" {
-  for_each = var.node_groups
-
-  cluster_name    = aws_eks_cluster.this.name
-  node_group_name = each.key
-  node_role_arn   = each.value.node_role_arn
-  subnet_ids      = each.value.subnet_ids
+resource "aws_eks_node_group" "vnpt_node_group1" {
+  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  node_group_name = "vnpt-node-group1"
+  node_role_arn   = var.eks_node_role_arn
+  subnet_ids      = var.subnet_ids
 
   scaling_config {
-    desired_size = each.value.desired_size
-    max_size     = each.value.max_size
-    min_size     = each.value.min_size
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
   }
 
-  instance_types = each.value.instance_types
-  ami_type       = each.value.ami_type
-  disk_size      = each.value.disk_size
-  capacity_type  = each.value.capacity_type
+  launch_template {
+    id      = aws_launch_template.eks_nodes_group1.id
+    version = "$Latest"
+  }
 
-  tags = merge(
-    var.tags,
-    {
-      Name   = each.key
-      Module = "eks"
-    }
-  )
+  # remote_access {
+  #   ec2_ssh_key               = var.ssh_key_name
+  #   source_security_group_ids = [aws_security_group.bastion_sg.id]
+  # }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
+  ]
+
+  tags = {
+    Name = "vnpt-node-group1"
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+  }
 }
 
-resource "aws_iam_openid_connect_provider" "this" {
-  count           = var.create_iam_oidc_provider ? 1 : 0
-  url             = aws_eks_cluster.this.identity[0].oidc[0].issuer
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da0ecd4e30b"]
+resource "aws_eks_node_group" "vnpt_node_group2" {
+  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  node_group_name = "vnpt-node-group2"
+  node_role_arn   = var.eks_node_role_arn
+  subnet_ids      = var.subnet_ids
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
+  }
+
+  launch_template {
+    id      = aws_launch_template.eks_nodes_group2.id
+    version = "$Latest"
+  }
+
+  # remote_access {
+  #   ec2_ssh_key               = var.ssh_key_name
+  #   source_security_group_ids = [aws_security_group.bastion_sg.id]
+  # }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
+  ]
+
+  tags = {
+    Name = "vnpt-node-group2"
+    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+  } 
 }
 
-
-# -----------------------------------------------------------------------------
-# Data Sources
-# -----------------------------------------------------------------------------
-
-data "aws_eks_cluster" "this" {
-  name = aws_eks_cluster.this.name
+resource "aws_security_group" "eks_cluster_sg" {
+  name        = "eks-cluster-sg"
+  description = "EKS cluster security group"
+  vpc_id      = var.vpc_main_id
+  tags        = { Name = "eks-cluster-sg" }
 }
 
-data "aws_eks_cluster_auth" "this" {
-  name = aws_eks_cluster.this.name
+resource "aws_security_group" "eks_nodes_sg" {
+  name        = "eks-nodes-sg"
+  description = "EKS worker nodes SG"
+  vpc_id      = var.vpc_main_id
+  ingress {
+    description = "Allow nodes communication"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["10.233.8.0/24"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "eks-nodes-sg" }
 }
 
-data "aws_iam_openid_connect_provider" "this" {
-  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
+resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster_sg.id
+  source_security_group_id = aws_security_group.eks_nodes_sg.id
+  description              = "Allow nodes to talk to cluster"
+}
+
+resource "aws_security_group_rule" "allow_bastion_to_cluster_443" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster_sg.id
+  source_security_group_id = aws_security_group.bastion_sg.id
+  description              = "Allow bastion host to connect to cluster"
+}
+
+resource "aws_security_group" "bastion_sg" {
+  name        = "bastion-sg"
+  description = "Security group for bastion host (SSM only)"
+  vpc_id      = var.vpc_main_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "bastion-sg" }
 }

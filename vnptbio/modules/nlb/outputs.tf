@@ -1,19 +1,11 @@
-output "nlb_arn" {
-  description = "ARN of the Network Load Balancer"
-  value       = aws_lb.this.arn
+output "nlb_arns" {
+  value = { for k, v in aws_lb.this : k => v.arn }
 }
 
-output "nlb_dns_name" {
-  description = "DNS name of the Network Load Balancer"
-  value       = aws_lb.this.dns_name
+output "target_group_arns" {
+  value = { for k, v in aws_lb_target_group.this : k => v.arn }
 }
 
-output "target_group_arn" {
-  description = "ARN of the target group"
-  value       = aws_lb_target_group.this.arn
-}
-
-output "listener_arn" {
-  description = "ARN of the listener"
-  value       = aws_lb_listener.this.arn
+output "security_group_id" {
+  value = aws_security_group.this.id
 }
