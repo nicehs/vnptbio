@@ -64,3 +64,18 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "bastion_ssm_role_name" {
+  description = "IAM role name for the bastion SSM access"
+  type        = string
+}
+
+variable "bastion_ssm_profile_name" {
+  description = "IAM instance profile name for the bastion SSM access"
+  type        = string
+}
+
+variable "aws_eks_cluster_biocenter_cluster" {
+  description = "EKS cluster object for dependency"
+  type        = any
+}

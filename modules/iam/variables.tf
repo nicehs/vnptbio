@@ -37,3 +37,20 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "policy_arns" {
+  description = "List of IAM policy ARNs to attach to the role"
+  type        = list(string)
+  default     = []
+}
+
+variable "role_name_prefix" {
+  description = "Prefix to use for IAM role names"
+  type        = string
+  default     = "vnpt-bio"
+}
+
+variable "biocenter_cluster_name" {
+  description = "The name of the IAM role"
+  type        = string
+}

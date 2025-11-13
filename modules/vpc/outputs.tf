@@ -1,27 +1,19 @@
+# Output VPC ID
 output "vpc_id" {
-  description = "The ID of the created VPC"
-  value       = aws_vpc.this.id
+  value = aws_vpc.main.id
 }
 
-output "public_subnet_id" {
-  description = "Public subnet ID"
-  value       = aws_subnet.public.id
-}
-
+# Output private subnet IDs
 output "private_subnet_ids" {
-  description = "List of private subnet IDs"
-  value       = [for s in aws_subnet.private : s.id]
+  value = aws_subnet.private[*].id
 }
 
-output "nat_gateway_id" {
-  description = "The NAT Gateway ID"
-  value       = aws_nat_gateway.this.id
+# Output public subnet IDs
+output "public_subnets" {
+  value = [aws_subnet.public.id]
 }
 
-output "public_route_table_id" {
-  value = aws_route_table.public.id
-}
-
-output "private_route_table_id" {
-  value = aws_route_table.private.id
-}
+# # Security group for cluster
+# output "cluster_sg_id" {
+#   value = var.eks_cluster_sg_id
+# }
