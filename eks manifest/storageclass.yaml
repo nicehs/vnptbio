@@ -3,6 +3,8 @@ kind: StorageClass
 metadata:
   name: gp3
 provisioner: ebs.csi.aws.com
-volumeBindingMode: WaitForFirstConsumer
 parameters:
   type: gp3
+  fsType: ext4
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

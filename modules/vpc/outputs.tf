@@ -1,19 +1,19 @@
-# Output VPC ID
-output "vpc_id" {
-  value = aws_vpc.main.id
+output "secondary_cidr_block" {
+  description = "Secondary CIDR block associated with VPC"
+  value       = aws_vpc_ipv4_cidr_block_association.secondary.cidr_block
 }
 
-# Output private subnet IDs
-output "private_subnet_ids" {
-  value = aws_subnet.private[*].id
+output "secondary_subnet_ids" {
+  description = "Map of AZ to secondary subnet IDs"
+  value       = { for k, v in aws_subnet.secondary : k => v.id }
 }
 
-# Output public subnet IDs
-output "public_subnets" {
-  value = [aws_subnet.public.id]
+output "secondary_subnets" {
+  description = "Map of secondary subnet details"
+  value       = aws_subnet.secondary
 }
 
-# # Security group for cluster
-# output "cluster_sg_id" {
-#   value = var.eks_cluster_sg_id
-# }
+output "secondary_route_table_id" {
+  description = "Route table ID for secondary subnets"
+  value       = aws_route_table.secondary.id
+}

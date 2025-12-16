@@ -1,8 +1,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: docker-registry-ingress
-  namespace: ingress-nginx
+  name: apigw-ingress
+  namespace: ekyc-vnpt
   annotations:
     kubernetes.io/ingress.class: "nginx"
     nginx.ingress.kubernetes.io/proxy-body-size: "0"          # allow large uploads
@@ -12,10 +12,10 @@ spec:
   rules:
   - http:
       paths:
-      - path: /v2
+      - path: /
         pathType: Prefix
         backend:
           service:
-            name: docker-registry
+            name: apigateway-service
             port:
-              number: 5000
+              number: 8762

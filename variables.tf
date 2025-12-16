@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "environment" {
   description = "Environment name (e.g. dev, staging, prod)"
   type        = string
-  default     = "dev"
+  default     = "prod"
 }
 
 variable "project_name" {
@@ -21,3 +21,34 @@ variable "create_iam_oidc_provider" {
   type        = bool
   default     = false
 }
+
+variable "cluster_version" {
+  description = "Kubernetes version"
+  type        = string
+  default     = "1.28"
+}
+
+variable "vpc_id" {
+  description = "Vitural Private Network ID"
+  type        = string
+  default     = "vpc-0a3f2e52e36b98632"
+}
+
+variable "subnet_id_app_a" {
+  description = "Subnet for apse1-az2 (ap-southeast-1a)"
+  type        = string
+  default     = "subnet-06bb68d9a8bb024fa"
+}
+
+variable "subnet_id_app_b" {
+  description = "Subnet for apse1-az1 (ap-southeast-1b)"
+  type        = string
+  default     = "subnet-0bca68b1e17423a9e"
+}
+
+# variable "db_password" {
+#   description = "Database password for RDS Postgres"
+#   type        = string
+#   default     = "Vnpt#ekyc2024"
+#   sensitive   = true
+# }

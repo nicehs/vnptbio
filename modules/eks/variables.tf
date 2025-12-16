@@ -82,7 +82,7 @@ variable "tags" {
   default     = {}
 }
 
-variable "vpc_main_id" {
+variable "vpc_id" {
   description = "The main VPC ID for the EKS cluster"
   type        = string
 }
@@ -102,7 +102,23 @@ variable "node_AmazonEC2ContainerRegistryReadOnly" {
   type        = string
 }
 
-variable "bastion_sg_id" {
-  description = "Security group ID for the bastion host"
+variable "license_server_sg_id" {
+  description = "Security group ID for the license server"
   type        = string
 }
+
+# variable "cluster_version" {
+#   description = "Kubernetes version for the EKS cluster"
+#   type        = string
+# }
+
+# variable "secondary_subnets" {
+#   description = "Map of AZ to secondary subnet IDs for pod networking"
+#   type        = map(string)
+# }
+
+# variable "aws_vpc_cni_service_account_name" {
+#   description = "Service account name for VPC CNI"
+#   type        = string
+#   default     = "aws-node"
+# }

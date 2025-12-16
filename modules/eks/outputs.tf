@@ -1,9 +1,9 @@
 output "cluster_name" {
-  value = aws_eks_cluster.biocenter_cluster.name
+  value = aws_eks_cluster.vnpt_cluster.name
 }
 
 output "cluster_arn" {
-  value = aws_eks_cluster.biocenter_cluster.arn
+  value = aws_eks_cluster.vnpt_cluster.arn
 }
 
 output "vnpt_node_group1" {
@@ -29,8 +29,8 @@ output "eks_nodes_sg_id" {
   value = aws_security_group.eks_nodes_sg.id
 }
 
-# output "bastion_public_ip" {
-#   value = aws_instance.bastion.public_ip
+# output "license_server_public_ip" {
+#   value = aws_instance.license server.public_ip
 # }
 
 output "launch_template_group1_id" {
@@ -45,6 +45,26 @@ output "subnet_ids" {
   value = var.subnet_ids
 }
 
-output "aws_eks_cluster_biocenter_cluster" {
-  value = aws_eks_cluster.biocenter_cluster
+output "aws_eks_cluster_vnpt_cluster" {
+  value = aws_eks_cluster.vnpt_cluster
 }
+
+# output "vpc_cni_addon_version" {
+#   description = "Version of VPC CNI addon installed"
+#   value       = aws_eks_addon.vpc_cni.addon_version
+# }
+
+# output "vpc_cni_iam_role_arn" {
+#   description = "IAM role ARN for VPC CNI pod identity"
+#   value       = aws_iam_role.vpc_cni.arn
+# }
+
+# output "vpc_cni_iam_role_name" {
+#   description = "IAM role name for VPC CNI"
+#   value       = aws_iam_role.vpc_cni.name
+# }
+
+# output "vpc_cni_pod_identity_association_id" {
+#   description = "Pod Identity Association ID for VPC CNI"
+#   value       = aws_eks_pod_identity_association.vpc_cni.id
+# }

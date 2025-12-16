@@ -1,31 +1,31 @@
 variable "name" {
-  description = "Name of the bastion host"
+  description = "Name of the license server host"
   type        = string
 }
 
 variable "vpc_id" {
-  description = "VPC ID where bastion will be created"
+  description = "VPC ID where license server will be created"
   type        = string
 }
 
 variable "subnet_id" {
-  description = "Subnet ID for bastion host (should be public subnet)"
+  description = "Subnet ID for license server host (should be public subnet)"
   type        = string
 }
 
 variable "ami_id" {
-  description = "AMI ID for the bastion host"
+  description = "AMI ID for the license server host"
   type        = string
 }
 
 variable "instance_type" {
-  description = "Instance type for bastion host"
+  description = "Instance type for license server host"
   type        = string
   default     = "t3.micro"
 }
 
 variable "allowed_ssh_cidrs" {
-  description = "List of CIDRs allowed to SSH into bastion"
+  description = "List of CIDRs allowed to SSH into license server"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
@@ -48,7 +48,7 @@ variable "public_key" {
 }
 
 variable "create_eip" {
-  description = "Whether to attach an Elastic IP to the bastion host"
+  description = "Whether to attach an Elastic IP to the license server host"
   type        = bool
   default     = true
 }
@@ -65,17 +65,17 @@ variable "tags" {
   default     = {}
 }
 
-variable "bastion_ssm_role_name" {
-  description = "IAM role name for the bastion SSM access"
+variable "license_server_ssm_role_name" {
+  description = "IAM role name for the license server SSM access"
   type        = string
 }
 
-variable "bastion_ssm_profile_name" {
-  description = "IAM instance profile name for the bastion SSM access"
+variable "license_server_ssm_profile_name" {
+  description = "IAM instance profile name for the license server SSM access"
   type        = string
 }
 
-variable "aws_eks_cluster_biocenter_cluster" {
+variable "aws_eks_cluster_vnpt_cluster" {
   description = "EKS cluster object for dependency"
   type        = any
 }

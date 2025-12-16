@@ -1,105 +1,59 @@
-# -----------------------------------------------------------------------------
-# VPC
-# -----------------------------------------------------------------------------
-resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr_block
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags = { Name = var.vpc_name }
+# Data source to get available AZs
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
-# -----------------------------------------------------------------------------
-# Internet Gateway
-# -----------------------------------------------------------------------------
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.vpc_name}-igw" }
+# Associate secondary CIDR block to existing VPC
+resource "aws_vpc_ipv4_cidr_block_association" "secondary" {
+  vpc_id     = var.vpc_id
+  cidr_block = "100.64.0.0/16"
 }
 
-# -----------------------------------------------------------------------------
-# Public Subnet
-# -----------------------------------------------------------------------------
-resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnets_cidrs
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = true
+# Create secondary subnets for pod networking (one per AZ)
+resource "aws_subnet" "secondary" {
+  for_each = toset(slice(data.aws_availability_zones.available.names, 0, 2))
 
-  tags = {
-    Name                                      = "${var.vpc_name}-public-subnet"
-    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
-    "kubernetes.io/role/elb"                  = "1"
-  }
+  vpc_id            = var.vpc_id
+  cidr_block        = cidrsubnet("100.64.0.0/16", 9, index(data.aws_availability_zones.available.names, each.value))
+  availability_zone = each.value
+
+  tags = merge(
+    var.tags,
+    {
+      Name                                        = "eks-secondary-private-${each.value}"
+      "kubernetes.io/role/internal-elb"           = "1"
+      "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    }
+  )
+
+  depends_on = [aws_vpc_ipv4_cidr_block_association.secondary]
 }
 
-# -----------------------------------------------------------------------------
-# Private Subnets
-# -----------------------------------------------------------------------------
-resource "aws_subnet" "private" {
-  count                   = 2
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.private_subnets_cidrs[count.index]
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = false
-  tags = {
-    Name                                = "eks-subnet-${count.index}"
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
-    "kubernetes.io/role/internal-elb" = "1"
-  }
+# Route table for secondary subnets
+resource "aws_route_table" "secondary" {
+  vpc_id = var.vpc_id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "eks-secondary-private-route-table"
+    }
+  )
 }
 
-# -----------------------------------------------------------------------------
-# NAT Gateway
-# -----------------------------------------------------------------------------
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  tags   = { Name = "${var.vpc_name}-nat-eip" }
+# Associate route table with secondary subnets
+resource "aws_route_table_association" "secondary" {
+  for_each = aws_subnet.secondary
+
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.secondary.id
 }
 
-resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public.id
-  tags          = { Name = "${var.vpc_name}-nat" }
-}
+# VPC Endpoints routes (if using VPC endpoints for private connectivity)
+resource "aws_route" "secondary_vpce" {
+  count = var.vpc_endpoint_id != null ? 1 : 0
 
-# -----------------------------------------------------------------------------
-# Route Tables
-# -----------------------------------------------------------------------------
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.vpc_name}-public-rt" }
-}
-
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
+  route_table_id         = aws_route_table.secondary.id
   destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.igw.id
+  vpc_endpoint_id        = var.vpc_endpoint_id
 }
-
-resource "aws_route_table_association" "public_assoc" {
-  subnet_id      = aws_subnet.public.id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.vpc_name}-private-rt" }
-}
-
-resource "aws_route" "private_nat" {
-  route_table_id         = aws_route_table.private.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.nat.id
-}
-
-resource "aws_route_table_association" "private_assoc" {
-  count          = length(aws_subnet.private)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
-}
-
-# -----------------------------------------------------------------------------
-# Data Sources
-# -----------------------------------------------------------------------------
-data "aws_availability_zones" "available" {}

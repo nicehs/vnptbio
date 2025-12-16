@@ -1,21 +1,22 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: docker-registry-ingress
-  namespace: ingress-nginx
+  name: apigw-healthcheck-ingress
+  namespace: ekyc-vnpt
   annotations:
     kubernetes.io/ingress.class: "nginx"
     nginx.ingress.kubernetes.io/proxy-body-size: "0"          # allow large uploads
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/rewrite-target: /actuator/health
 spec:
   rules:
   - http:
       paths:
-      - path: /v2
+      - path: /vnpt-ekyc/live/health
         pathType: Prefix
         backend:
           service:
-            name: docker-registry
+            name: apigateway-service
             port:
-              number: 5000
+              number: 8762

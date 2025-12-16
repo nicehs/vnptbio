@@ -39,7 +39,7 @@ resource "aws_lb" "nlb_se1b" {
 resource "aws_security_group" "nlb_sg" {
   name        = "nlb-shared-sg"
   description = "Security group for both NLBs"
-  vpc_id      = var.vpc_main_id
+  vpc_id      = var.vpc_id
 
   # Allow inbound from the internet or your CIDR
   ingress {
@@ -81,7 +81,7 @@ resource "aws_lb_target_group" "nginx_tg_se1a" {
   name        = "nginx-tg-se1a"
   port        = 31730
   protocol    = "TCP"
-  vpc_id      = var.vpc_main_id
+  vpc_id      = var.vpc_id
   target_type = "instance"
   health_check {
     port     = "31730"
@@ -93,7 +93,7 @@ resource "aws_lb_target_group" "nginx_tg_se1b" {
   name        = "nginx-tg-se1b"
   port        = 31730
   protocol    = "TCP"
-  vpc_id      = var.vpc_main_id
+  vpc_id      = var.vpc_id
   target_type = "instance"
   health_check {
     port     = "31730"
@@ -137,6 +137,6 @@ resource "aws_lb_target_group_attachment" "nginx_nodeport_se1b" {
 
 data "aws_instances" "eks_nodes" {
   instance_tags = {
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
   }
 }

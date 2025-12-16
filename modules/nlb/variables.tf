@@ -34,7 +34,7 @@ variable "tags" {
   default     = {}
 }
 
-variable "vpc_main_id" {
+variable "vpc_id" {
   description = "The main VPC ID for the EKS cluster"
   type        = string
 }

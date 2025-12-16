@@ -13,37 +13,51 @@ terraform {
   }
 
   # backend "s3" {
-  #   bucket         = "my-terraform-state-bucket"
-  #   key            = "xplat-hydro/terraform.tfstate"
-  #   region         = "ap-southeast-1"
-  #   dynamodb_table = "terraform-locks"
-  #   encrypt        = true
+  #   bucket = "vnpt-ekyc-terraform-state"
+  #   key    = "live/terraform.tfstate"
+  #   region = "ap-southeast-1"
+  #   encrypt = true
+  #   skip_credentials_validation = true
+  #   skip_metadata_api_check     = true
   # }
 }
 
 provider "aws" {
   region = var.aws_region
 }
-
 ###########################################
 # VPC module
 ###########################################
-module "vpc" {
-  source = "./modules/vpc"
+# module "vpc" {
+#   source = "./modules/vpc"
 
-  vpc_cidr_block = "10.233.8.0/24"
-  availability_zones = "ap-southeast-1"
-  cluster_name = "biocenter-cluster"
-}
+#   vpc_cidr_block = "10.233.8.0/24"
+#   availability_zones = "ap-southeast-1"
+#   cluster_name = "vnpt-cluster"
+# }
+
+# VPC Module - Creates secondary CIDR and private subnets
+# module "vpc" {
+#   source = "./modules/vpc"
+
+#   vpc_id       = var.vpc_id
+#   cluster_name = "vnpt-cluster"
+
+#   tags = {
+#     Environment = "production"
+#     ManagedBy   = "Terraform"
+#     Type        = "private"
+#   }
+# }
 
 ###########################################
 # IAM module
 ###########################################
-module "iam" {
-  source = "./modules/iam"
-  #cluster_name = "biocenter-cluster"
+module "iam_core" {
+  source = "./modules/iam_core"
+  cluster_name = module.eks.cluster_name
   role_name           = "eks-cluster-role"
-  biocenter_cluster_name = module.eks.cluster_name
+  # vnpt_cluster_name = module.eks.cluster_name
   assume_role_policy  = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -56,39 +70,55 @@ module "iam" {
   })
 }
 
+module "iam_irsa" {
+  source       = "./modules/iam_irsa"
+  cluster_name = module.eks.cluster_name
+
+  depends_on = [module.eks]  # required to avoid cycles
+}
+
 ###########################################
 # EKS module
 ###########################################
 module "eks" {
   source = "./modules/eks"
 
-  cluster_name  = "biocenter-cluster"
-  eks_role_arn  = module.iam.eks_role_arn
-  eks_node_role_arn = module.iam.eks_node_role_arn
-  subnet_ids     = module.vpc.private_subnet_ids
-  vpc_main_id = module.vpc.vpc_id
-  node_AmazonEKSWorkerNodePolicy = module.iam.node_AmazonEKSWorkerNodePolicy
-  node_AmazonEKS_CNI_Policy      = module.iam.node_AmazonEKS_CNI_Policy
-  node_AmazonEC2ContainerRegistryReadOnly = module.iam.node_AmazonEC2ContainerRegistryReadOnly
-  bastion_sg_id = module.ec2.bastion_sg_id
+  cluster_name  = "vnpt-cluster"
+  # cluster_version   = var.cluster_version
+  eks_role_arn  = module.iam_core.eks_role_arn
+  eks_node_role_arn = module.iam_core.eks_node_role_arn
+  subnet_ids     = [var.subnet_id_app_a, var.subnet_id_app_b]
+  vpc_id = var.vpc_id
+  node_AmazonEKSWorkerNodePolicy = module.iam_core.node_AmazonEKSWorkerNodePolicy
+  node_AmazonEKS_CNI_Policy      = module.iam_core.node_AmazonEKS_CNI_Policy
+  node_AmazonEC2ContainerRegistryReadOnly = module.iam_core.node_AmazonEC2ContainerRegistryReadOnly
+  license_server_sg_id = module.ec2.license_server_sg_id
+  # secondary_subnets = module.vpc.secondary_subnet_ids
+
+  tags = {
+    Environment = "production"
+    ManagedBy   = "Terraform"
+  }
+
+  # depends_on = [module.vpc]
 }
 
 
 # -----------------------------------------------------------------------------
-# Bastion Host Module
+# EC2 Module
 # -----------------------------------------------------------------------------
 
 module "ec2" {
   source = "./modules/ec2"
 
   name              = "license-server"
-  vpc_id            = module.vpc.vpc_id
-  subnet_id         = element(module.vpc.public_subnets, 0)
+  vpc_id            = var.vpc_id
+  subnet_id         = var.subnet_id_app_a
   ami_id            = data.aws_ami.amazon_linux.id
-  aws_eks_cluster_biocenter_cluster = module.eks.aws_eks_cluster_biocenter_cluster
+  aws_eks_cluster_vnpt_cluster = module.eks.aws_eks_cluster_vnpt_cluster
   instance_type     = "t3.micro"
-  bastion_ssm_profile_name = module.iam.bastion_ssm_profile_name
-  bastion_ssm_role_name    = module.iam.bastion_ssm_role_name
+  license_server_ssm_profile_name = module.iam_core.license_server_ssm_profile_name
+  license_server_ssm_role_name    = module.iam_core.license_server_ssm_role_name
 
   key_name        = "my-keypair"
   #create_key_pair = false
@@ -103,27 +133,48 @@ module "ec2" {
 
 data "aws_instances" "eks_nodes" {
   instance_tags = {
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
   }
 }
 
 module "nlb" {
   source = "./modules/nlb"
 
-  vpc_main_id          = module.vpc.vpc_id
+  vpc_id          = var.vpc_id
   eks_nodes_sg_id = module.eks.eks_nodes_sg_id
 
   subnet_mapping = {
     "nlb-se1a" = {
-      subnet_id  = element(module.vpc.private_subnet_ids, 0)
+      subnet_id  = element([var.subnet_id_app_a, var.subnet_id_app_b], 0)
       private_ip = "10.233.8.132"
     },
     "nlb-se1b" = {
-      subnet_id  = element(module.vpc.private_subnet_ids, 1)
+      subnet_id  = element([var.subnet_id_app_a, var.subnet_id_app_b], 1)
       private_ip = "10.233.8.196"
     }
   }
 }
+
+# -----------------------------------------------------------------------------
+# S3
+# -----------------------------------------------------------------------------
+# module "s3" {
+#   source = "./modules/s3"
+
+#   environment = var.environment
+#   project_name     = var.project_name
+# }
+
+# -----------------------------------------------------------------------------
+# RDS
+# -----------------------------------------------------------------------------
+# module "rds" {
+#   source = "./modules/rds"
+
+#   subnet_ids     = [var.subnet_id_app_a, var.subnet_id_app_b]
+#   db_password    = var.db_password
+#   vpc_id = var.vpc_id
+# }
 
 # -----------------------------------------------------------------------------
 # Data Sources
@@ -173,7 +224,7 @@ data "aws_iam_policy_document" "eks_policy" {
 locals {
   common_tags = {
     Environment = var.environment
-    Project     = "xplat-hydro"
+    Project     = "vnpt-biocenter"
     ManagedBy   = "Terraform"
   }
 }

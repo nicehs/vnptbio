@@ -6,7 +6,7 @@ data:
       - system:bootstrappers
       - system:nodes
       username: system:node:{{EC2PrivateDNSName}}
-    - rolearn: arn:aws:iam::136079915181:role/bastion-ssm-role
+    - rolearn: arn:aws:iam::136079915181:role/license-server-ssm-role
       username: system:node:{{SessionName}}
       groups:
         - system:masters

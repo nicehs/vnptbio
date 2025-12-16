@@ -23,18 +23,18 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  host                   = aws_eks_cluster.biocenter_cluster.endpoint
-  cluster_ca_certificate = base64decode(aws_eks_cluster.biocenter_cluster.certificate_authority[0].data)
-  token                  = data.aws_eks_cluster_auth.biocenter_cluster.token
+  host                   = aws_eks_cluster.vnpt_cluster.endpoint
+  cluster_ca_certificate = base64decode(aws_eks_cluster.vnpt_cluster.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.vnpt_cluster.token
   load_config_file       = false
 }
 
 
 provider "helm" {
   kubernetes {
-    host                   = aws_eks_cluster.biocenter_cluster.endpoint
-    cluster_ca_certificate = base64decode(aws_eks_cluster.biocenter_cluster.certificate_authority[0].data)
-    token                  = data.aws_eks_cluster_auth.biocenter_cluster.token
+    host                   = aws_eks_cluster.vnpt_cluster.endpoint
+    cluster_ca_certificate = base64decode(aws_eks_cluster.vnpt_cluster.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.vnpt_cluster.token
     #load_config_file       = false
   }
 }
@@ -62,7 +62,7 @@ resource "aws_subnet" "eks" {
   map_public_ip_on_launch = false
   tags = {
     Name                                = "eks-subnet-${count.index}"
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
     "kubernetes.io/role/internal-elb" = "1"
   }
 }
@@ -103,7 +103,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
   tags = {  
     Name                                = "eks-public-subnet"
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
     "kubernetes.io/role/elb" = "1"
   }
 }
@@ -207,18 +207,18 @@ resource "aws_security_group_rule" "allow_nodes_to_cluster_443" {
   description              = "Allow nodes to talk to cluster"
 }
 
-resource "aws_security_group_rule" "allow_bastion_to_cluster_443" {
+resource "aws_security_group_rule" "allow_license_server_to_cluster_443" {
   type                     = "ingress"
   from_port                = 443
   to_port                  = 443
   protocol                 = "tcp"
   security_group_id        = aws_security_group.eks_cluster_sg.id
-  source_security_group_id = aws_security_group.bastion_sg.id
+  source_security_group_id = aws_security_group.license_server_sg.id
   description              = "Allow bastion host to connect to cluster"
 }
 
-resource "aws_security_group" "bastion_sg" {
-  name        = "bastion-sg"
+resource "aws_security_group" "license_server_sg" {
+  name        = "license-server-sg"
   description = "Security group for bastion host (SSM only)"
   vpc_id      = aws_vpc.main.id
 
@@ -228,7 +228,7 @@ resource "aws_security_group" "bastion_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = { Name = "bastion-sg" }
+  tags = { Name = "license-server-sg" }
 }
 
 # resource "aws_security_group" "license_server_sg" {
@@ -256,13 +256,13 @@ resource "aws_security_group" "bastion_sg" {
 #   tags                 = { Name = "license-server" }
 # }
 
-# resource "aws_security_group_rule" "bastion_to_license_server_ssh" {
+# resource "aws_security_group_rule" "license_server_to_license_server_ssh" {
 #   type                     = "ingress"
 #   from_port                = 22
 #   to_port                  = 22
 #   protocol                 = "tcp"
 #   security_group_id        = aws_security_group.license_server_sg.id
-#   source_security_group_id = aws_security_group.bastion_sg.id
+#   source_security_group_id = aws_security_group.license_server_sg.id
 #   description              = "Allow SSH from Bastion to License Server"
 # }
 
@@ -300,13 +300,13 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-resource "aws_iam_instance_profile" "bastion_ssm_profile" {
-  name = "bastion-ssm-profile"
-  role = aws_iam_role.bastion_ssm_role.name
+resource "aws_iam_instance_profile" "license_server_ssm_profile" {
+  name = "license-server-ssm-profile"
+  role = aws_iam_role.license_server_ssm_role.name
 }
 
 # resource "aws_iam_role" "ssm_role" {
-#   name = "bastion-ssm-role"
+#   name = "license-server-ssm-role"
 #   assume_role_policy = data.aws_iam_policy_document.ssm_assume_role_policy.json
 # }
 
@@ -320,8 +320,8 @@ data "aws_iam_policy_document" "ssm_assume_role_policy" {
   }
 }
 
-# resource "aws_iam_role_policy_attachment" "bastion_custom_eks_access" {
-#   role       = aws_iam_role.bastion_ssm_role.name
+# resource "aws_iam_role_policy_attachment" "license_server_custom_eks_access" {
+#   role       = aws_iam_role.license_server_ssm_role.name
 #   policy_arn = "arn:aws:iam::136079915181:policy/EKSPlayground"
 # }
 
@@ -329,9 +329,9 @@ resource "aws_instance" "bastion" {
   ami                  = data.aws_ami.amazon_linux.id
   instance_type        = "t3.micro"
   subnet_id            = aws_subnet.eks[0].id
-  security_groups      = [aws_security_group.bastion_sg.id]
-  iam_instance_profile = aws_iam_instance_profile.bastion_ssm_profile.name
-  tags                 = { Name = "bastion-host" }
+  security_groups      = [aws_security_group.license_server_sg.id]
+  iam_instance_profile = aws_iam_instance_profile.license_server_ssm_profile.name
+  tags                 = { Name = "license-server-host" }
   user_data = <<-EOF
     #!/bin/bash
     set -e
@@ -388,7 +388,7 @@ resource "aws_instance" "bastion" {
     eksctl version
 
     # Add kube config
-    sudo aws eks --region ap-southeast-1 update-kubeconfig --name biocenter-cluster
+    sudo aws eks --region ap-southeast-1 update-kubeconfig --name vnpt-cluster
 
     # Install registry
     sudo helm repo add twuni https://helm.twun.io
@@ -396,7 +396,7 @@ resource "aws_instance" "bastion" {
     sudo kubectl create serviceaccount registry-sa --namespace default
     sudo kubectl annotate serviceaccount registry-sa   eks.amazonaws.com/role-arn=arn:aws:iam::136079915181:role/eks-irsa-registry-role   --namespace default
     sudo helm upgrade --install docker-registry twuni/docker-registry   --namespace default   --create-namespace   --set persistence.enabled=false   --set service.type=NodePort   --set service.port=5000  \
-    --set storage=s3   --set s3.region=ap-southeast-1   --set s3.bucket=registry-bio1   --set s3.encrypt=true   --set serviceAccount.create=false   --set serviceAccount.name=registry-sa   --set secrets.s3.secretKey=""
+    --set storage=s3   --set s3.region=ap-southeast-1   --set s3.bucket=registry-ekyc   --set s3.encrypt=true   --set serviceAccount.create=false   --set serviceAccount.name=registry-sa   --set secrets.s3.secretKey=""
 
     # Install ingress
     sudo helm repo add eks https://aws.github.io/eks-charts
@@ -404,19 +404,19 @@ resource "aws_instance" "bastion" {
     sudo kubectl create serviceaccount aws-load-balancer-controller --namespace kube-system
     sudo kubectl annotate serviceaccount aws-load-balancer-controller   -n kube-system   eks.amazonaws.com/role-arn=arn:aws:iam::136079915181:role/eks-load-balancer-controller-role
     VPCID=`sudo aws ec2 describe-vpcs --filters "Name=tag:Name,Values=eks-vpc" --query "Vpcs[0].VpcId" --output text`
-    sudo helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller   -n kube-system   --set clusterName=biocenter-cluster   --set serviceAccount.create=false \
+    sudo helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller   -n kube-system   --set clusterName=vnpt-cluster   --set serviceAccount.create=false \
       --set region=ap-southeast-1   --set vpcId=$VPCID  --set serviceAccount.name=aws-load-balancer-controller
   EOF
 
-  depends_on = [aws_eks_cluster.biocenter_cluster]
+  depends_on = [aws_eks_cluster.vnpt_cluster]
 }
 
-output "bastion_user_data" {
+output "license_server_user_data" {
   value = aws_instance.bastion.user_data
 }
 
-resource "aws_iam_role" "bastion_ssm_role" {
-  name = "bastion-ssm-role"
+resource "aws_iam_role" "license_server_ssm_role" {
+  name = "license-server-ssm-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -432,8 +432,8 @@ resource "aws_iam_role" "bastion_ssm_role" {
   })
 }
 
-resource "aws_iam_policy" "bastion_ssm_policy" {
-  name        = "bastion-ssm-policy"
+resource "aws_iam_policy" "license_server_ssm_policy" {
+  name        = "license-server-ssm-policy"
   description = "Policy for Bastion SSM Role"
 
   policy = jsonencode({
@@ -525,14 +525,14 @@ resource "aws_iam_policy" "bastion_ssm_policy" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "bastion_ssm_core" {
-  role       = aws_iam_role.bastion_ssm_role.name
+resource "aws_iam_role_policy_attachment" "license_server_ssm_core" {
+  role       = aws_iam_role.license_server_ssm_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
-  role       = aws_iam_role.bastion_ssm_role.name
-  policy_arn = aws_iam_policy.bastion_ssm_policy.arn
+resource "aws_iam_role_policy_attachment" "license_server_ssm_attach" {
+  role       = aws_iam_role.license_server_ssm_role.name
+  policy_arn = aws_iam_policy.license_server_ssm_policy.arn
 }
 
 # resource "aws_vpc_endpoint" "ssm" {
@@ -540,7 +540,7 @@ resource "aws_iam_role_policy_attachment" "bastion_ssm_attach" {
 #   service_name      = "com.amazonaws.${var.aws_region}.ssm"
 #   vpc_endpoint_type = "Interface"
 #   subnet_ids        = aws_subnet.eks[*].id
-#   security_group_ids = [aws_security_group.bastion_sg.id]
+#   security_group_ids = [aws_security_group.license_server_sg.id]
 #   private_dns_enabled = true
 #   tags = { Name = "ssm-vpc-endpoint" }
 # }
@@ -781,7 +781,7 @@ resource "aws_lb_target_group_attachment" "nginx_nodeport_se1b" {
 
 data "aws_instances" "eks_nodes" {
   instance_tags = {
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
   }
 }
 # -----------------------------------------------------------------------------
@@ -820,14 +820,14 @@ data "aws_instances" "eks_nodes" {
 #     })
 #   ]
 
-#   depends_on = [aws_eks_cluster.biocenter_cluster]
+#   depends_on = [aws_eks_cluster.vnpt_cluster]
 # }
 
 # -----------------------------------------------------------------------------
 # EKS Cluster + Node Group
 # -----------------------------------------------------------------------------
-resource "aws_eks_cluster" "biocenter_cluster" {
-  name     = "biocenter-cluster"
+resource "aws_eks_cluster" "vnpt_cluster" {
+  name     = "vnpt-cluster"
   role_arn = aws_iam_role.eks_role.arn
   vpc_config {
     subnet_ids         = aws_subnet.eks[*].id
@@ -858,7 +858,7 @@ resource "aws_launch_template" "eks_nodes_group2" {
 }
 
 resource "aws_eks_node_group" "vnpt_node_group1" {
-  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  cluster_name    = aws_eks_cluster.vnpt_cluster.name
   node_group_name = "vnpt-node-group1"
   node_role_arn   = aws_iam_role.eks_node_role.arn
   subnet_ids      = aws_subnet.eks[*].id
@@ -876,7 +876,7 @@ resource "aws_eks_node_group" "vnpt_node_group1" {
 
   # remote_access {
   #   ec2_ssh_key               = var.ssh_key_name
-  #   source_security_group_ids = [aws_security_group.bastion_sg.id]
+  #   source_security_group_ids = [aws_security_group.license_server_sg.id]
   # }
 
   depends_on = [
@@ -887,12 +887,12 @@ resource "aws_eks_node_group" "vnpt_node_group1" {
 
   tags = {
     Name = "vnpt-node-group1"
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
   }
 }
 
 resource "aws_eks_node_group" "vnpt_node_group2" {
-  cluster_name    = aws_eks_cluster.biocenter_cluster.name
+  cluster_name    = aws_eks_cluster.vnpt_cluster.name
   node_group_name = "vnpt-node-group2"
   node_role_arn   = aws_iam_role.eks_node_role.arn
   subnet_ids      = aws_subnet.eks[*].id
@@ -910,7 +910,7 @@ resource "aws_eks_node_group" "vnpt_node_group2" {
 
   # remote_access {
   #   ec2_ssh_key               = var.ssh_key_name
-  #   source_security_group_ids = [aws_security_group.bastion_sg.id]
+  #   source_security_group_ids = [aws_security_group.license_server_sg.id]
   # }
 
   depends_on = [
@@ -921,17 +921,17 @@ resource "aws_eks_node_group" "vnpt_node_group2" {
 
   tags = {
     Name = "vnpt-node-group2"
-    "kubernetes.io/cluster/biocenter-cluster" = "owned"
+    "kubernetes.io/cluster/vnpt-cluster" = "owned"
   } 
 }
 
-resource "aws_security_group_rule" "bastion_to_nodes_ssh" {
+resource "aws_security_group_rule" "license_server_to_nodes_ssh" {
   type                     = "ingress"
   from_port                = 22
   to_port                  = 22
   protocol                 = "tcp"
   security_group_id        = aws_security_group.eks_nodes_sg.id
-  source_security_group_id = aws_security_group.bastion_sg.id
+  source_security_group_id = aws_security_group.license_server_sg.id
   description              = "Allow SSH from Bastion to EKS nodes"
 }
 
@@ -988,7 +988,7 @@ resource "aws_iam_service_linked_role" "rds" {
 # Initialize module in EKS
 # -----------------------------------------------------------------------------
 data "aws_eks_cluster" "this" {
-  name = aws_eks_cluster.biocenter_cluster.name
+  name = aws_eks_cluster.vnpt_cluster.name
 }
 
 # Fetch the OIDC provider for the cluster
@@ -1007,7 +1007,7 @@ resource "aws_iam_openid_connect_provider" "eks" {
 # IAM Policy for S3 access
 resource "aws_iam_policy" "registry_s3_access" {
   name        = "registry-s3-access"
-  description = "Allow S3 access to registry-bio1 bucket"
+  description = "Allow S3 access to registry-ekyc bucket"
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -1025,8 +1025,8 @@ resource "aws_iam_policy" "registry_s3_access" {
           "s3:ListBucketMultipartUploads"
         ],
         Resource = [
-          "arn:aws:s3:::registry-bio1",
-          "arn:aws:s3:::registry-bio1/*"
+          "arn:aws:s3:::registry-ekyc",
+          "arn:aws:s3:::registry-ekyc/*"
         ]
       }
     ]
@@ -1257,8 +1257,8 @@ data "aws_iam_policy_document" "eks_node_assume_role_policy" {
   }
 }
 
-data "aws_eks_cluster_auth" "biocenter_cluster" {
-  name = aws_eks_cluster.biocenter_cluster.name
+data "aws_eks_cluster_auth" "vnpt_cluster" {
+  name = aws_eks_cluster.vnpt_cluster.name
 }
 
 # -----------------------------------------------------------------------------
@@ -1299,8 +1299,8 @@ resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
-resource "aws_iam_role_policy_attachment" "bastion_eks" {
-  role       = aws_iam_role.bastion_ssm_role.name
+resource "aws_iam_role_policy_attachment" "license_server_eks" {
+  role       = aws_iam_role.license_server_ssm_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
@@ -1308,10 +1308,10 @@ resource "aws_iam_role_policy_attachment" "bastion_eks" {
 # S3
 # -----------------------------------------------------------------------------
 resource "aws_s3_bucket" "registry_bio" {
-  bucket = "registry-bio1"  # Must be globally unique
+  bucket = "registry-ekyc"  # Must be globally unique
 
   tags = {
-    Name        = "registry-bio1"
+    Name        = "registry-ekyc"
     Environment = var.environment
     Project     = var.project_name
   }
