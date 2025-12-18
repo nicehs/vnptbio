@@ -67,7 +67,7 @@ resource "aws_s3_bucket" "vnptekycupload" {
 }
 
 resource "aws_s3_bucket_versioning" "vnptekycupload_versioning" {
-  bucket = aws_s3_bucket.tf_state.id
+  bucket = aws_s3_bucket.vnptekycupload.id
 
   versioning_configuration {
     status = "Enabled"
@@ -75,7 +75,7 @@ resource "aws_s3_bucket_versioning" "vnptekycupload_versioning" {
 }
 
 resource "aws_s3_bucket_public_access_block" "vnptekycupload_public_access_block" {
-  bucket = aws_s3_bucket.tf_state.id
+  bucket = aws_s3_bucket.vnptekycupload.id
 
   block_public_acls       = true
   block_public_policy     = true

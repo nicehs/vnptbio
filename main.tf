@@ -12,14 +12,14 @@ terraform {
     }
   }
 
-  # backend "s3" {
-  #   bucket = "vnpt-ekyc-terraform-state"
-  #   key    = "live/terraform.tfstate"
-  #   region = "ap-southeast-1"
-  #   encrypt = true
-  #   skip_credentials_validation = true
-  #   skip_metadata_api_check     = true
-  # }
+  backend "s3" {
+    bucket = "vnpt-ekyc-terraform-state-dev"
+    # key    = "live/terraform.tfstate"
+    region = "ap-southeast-1"
+    encrypt = true
+    # skip_credentials_validation = true
+    # skip_metadata_api_check     = true
+  }
 }
 
 provider "aws" {
@@ -53,117 +53,117 @@ provider "aws" {
 ###########################################
 # IAM module
 ###########################################
-module "iam_core" {
-  source = "./modules/iam_core"
-  cluster_name = module.eks.cluster_name
-  role_name           = "eks-cluster-role"
-  # vnpt_cluster_name = module.eks.cluster_name
-  assume_role_policy  = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "eks.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
-  })
-}
+# module "iam_core" {
+#   source = "./modules/iam_core"
+#   cluster_name = module.eks.cluster_name
+#   role_name           = "eks-cluster-role"
+#   # vnpt_cluster_name = module.eks.cluster_name
+#   assume_role_policy  = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [{
+#       Effect = "Allow"
+#       Principal = {
+#         Service = "eks.amazonaws.com"
+#       }
+#       Action = "sts:AssumeRole"
+#     }]
+#   })
+# }
 
-module "iam_irsa" {
-  source       = "./modules/iam_irsa"
-  cluster_name = module.eks.cluster_name
+# module "iam_irsa" {
+#   source       = "./modules/iam_irsa"
+#   cluster_name = module.eks.cluster_name
 
-  depends_on = [module.eks]  # required to avoid cycles
-}
+#   depends_on = [module.eks]  # required to avoid cycles
+# }
 
 ###########################################
 # EKS module
 ###########################################
-module "eks" {
-  source = "./modules/eks"
+# module "eks" {
+#   source = "./modules/eks"
 
-  cluster_name  = "vnpt-cluster"
-  # cluster_version   = var.cluster_version
-  eks_role_arn  = module.iam_core.eks_role_arn
-  eks_node_role_arn = module.iam_core.eks_node_role_arn
-  subnet_ids     = [var.subnet_id_app_a, var.subnet_id_app_b]
-  vpc_id = var.vpc_id
-  node_AmazonEKSWorkerNodePolicy = module.iam_core.node_AmazonEKSWorkerNodePolicy
-  node_AmazonEKS_CNI_Policy      = module.iam_core.node_AmazonEKS_CNI_Policy
-  node_AmazonEC2ContainerRegistryReadOnly = module.iam_core.node_AmazonEC2ContainerRegistryReadOnly
-  license_server_sg_id = module.ec2.license_server_sg_id
-  # secondary_subnets = module.vpc.secondary_subnet_ids
+#   cluster_name  = "vnpt-cluster"
+#   # cluster_version   = var.cluster_version
+#   eks_role_arn  = module.iam_core.eks_role_arn
+#   eks_node_role_arn = module.iam_core.eks_node_role_arn
+#   subnet_ids     = [var.subnet_id_app_a, var.subnet_id_app_b]
+#   vpc_id = var.vpc_id
+#   node_AmazonEKSWorkerNodePolicy = module.iam_core.node_AmazonEKSWorkerNodePolicy
+#   node_AmazonEKS_CNI_Policy      = module.iam_core.node_AmazonEKS_CNI_Policy
+#   node_AmazonEC2ContainerRegistryReadOnly = module.iam_core.node_AmazonEC2ContainerRegistryReadOnly
+#   license_server_sg_id = module.ec2.license_server_sg_id
+#   # secondary_subnets = module.vpc.secondary_subnet_ids
 
-  tags = {
-    Environment = "production"
-    ManagedBy   = "Terraform"
-  }
+#   tags = {
+#     Environment = "production"
+#     ManagedBy   = "Terraform"
+#   }
 
-  # depends_on = [module.vpc]
-}
+#   # depends_on = [module.vpc]
+# }
 
 
 # -----------------------------------------------------------------------------
 # EC2 Module
 # -----------------------------------------------------------------------------
 
-module "ec2" {
-  source = "./modules/ec2"
+# module "ec2" {
+#   source = "./modules/ec2"
 
-  name              = "license-server"
-  vpc_id            = var.vpc_id
-  subnet_id         = var.subnet_id_app_a
-  ami_id            = data.aws_ami.amazon_linux.id
-  aws_eks_cluster_vnpt_cluster = module.eks.aws_eks_cluster_vnpt_cluster
-  instance_type     = "t3.micro"
-  license_server_ssm_profile_name = module.iam_core.license_server_ssm_profile_name
-  license_server_ssm_role_name    = module.iam_core.license_server_ssm_role_name
+#   name              = "license-server"
+#   vpc_id            = var.vpc_id
+#   subnet_id         = var.subnet_id_app_a
+#   ami_id            = data.aws_ami.amazon_linux.id
+#   aws_eks_cluster_vnpt_cluster = module.eks.aws_eks_cluster_vnpt_cluster
+#   instance_type     = "t3.micro"
+#   license_server_ssm_profile_name = module.iam_core.license_server_ssm_profile_name
+#   license_server_ssm_role_name    = module.iam_core.license_server_ssm_role_name
 
-  key_name        = "my-keypair"
-  #create_key_pair = false
-  create_eip      = true
+#   key_name        = "my-keypair"
+#   #create_key_pair = false
+#   create_eip      = true
 
-  tags = local.common_tags
-}
+#   tags = local.common_tags
+# }
 
 # -----------------------------------------------------------------------------
 # Network Load Balancer Module
 # -----------------------------------------------------------------------------
 
-data "aws_instances" "eks_nodes" {
-  instance_tags = {
-    "kubernetes.io/cluster/vnpt-cluster" = "owned"
-  }
-}
+# data "aws_instances" "eks_nodes" {
+#   instance_tags = {
+#     "kubernetes.io/cluster/vnpt-cluster" = "owned"
+#   }
+# }
 
-module "nlb" {
-  source = "./modules/nlb"
+# module "nlb" {
+#   source = "./modules/nlb"
 
-  vpc_id          = var.vpc_id
-  eks_nodes_sg_id = module.eks.eks_nodes_sg_id
+#   vpc_id          = var.vpc_id
+#   eks_nodes_sg_id = module.eks.eks_nodes_sg_id
 
-  subnet_mapping = {
-    "nlb-se1a" = {
-      subnet_id  = element([var.subnet_id_app_a, var.subnet_id_app_b], 0)
-      private_ip = "10.233.8.132"
-    },
-    "nlb-se1b" = {
-      subnet_id  = element([var.subnet_id_app_a, var.subnet_id_app_b], 1)
-      private_ip = "10.233.8.196"
-    }
-  }
-}
+#   subnet_mapping = {
+#     "nlb-se1a" = {
+#       subnet_id  = element([var.subnet_id_app_a, var.subnet_id_app_b], 0)
+#       private_ip = "10.233.8.132"
+#     },
+#     "nlb-se1b" = {
+#       subnet_id  = element([var.subnet_id_app_a, var.subnet_id_app_b], 1)
+#       private_ip = "10.233.8.196"
+#     }
+#   }
+# }
 
 # -----------------------------------------------------------------------------
 # S3
 # -----------------------------------------------------------------------------
-# module "s3" {
-#   source = "./modules/s3"
+module "s3" {
+  source = "./modules/s3"
 
-#   environment = var.environment
-#   project_name     = var.project_name
-# }
+  environment = var.environment
+  project_name     = var.project_name
+}
 
 # -----------------------------------------------------------------------------
 # RDS
