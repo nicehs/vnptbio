@@ -12,14 +12,14 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket = "vnpt-ekyc-terraform-state-dev"
-    # key    = "live/terraform.tfstate"
-    region = "ap-southeast-1"
-    encrypt = true
-    # skip_credentials_validation = true
-    # skip_metadata_api_check     = true
-  }
+  # backend "s3" {
+  #   bucket = "vnpt-ekyc-terraform-state-dev"
+  #   # key    = "live/terraform.tfstate"
+  #   region = "ap-southeast-1"
+  #   encrypt = true
+  #   # skip_credentials_validation = true
+  #   # skip_metadata_api_check     = true
+  # }
 }
 
 provider "aws" {
